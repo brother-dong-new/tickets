@@ -299,6 +299,121 @@ function App() {
                       </span>
                     </div>
                   </div>
+                  
+                  {/* 30分钟成交量趋势图 */}
+                  {stock.minute_volume && stock.minute_volume.length > 0 && (
+                    <div className="volume-chart">
+                      <div className="chart-header">
+                        <span className="chart-title">📊 近30分钟行情</span>
+                        <span className="chart-time">
+                          {stock.minute_volume[0]?.time} - {stock.minute_volume[stock.minute_volume.length - 1]?.time}
+                        </span>
+                      </div>
+                      {/* 价格区间显示 */}
+                      {(() => {
+                        const prices = stock.minute_volume.map(m => m.price);
+                        const minPrice = Math.min(...prices);
+                        const maxPrice = Math.max(...prices);
+                        const firstPrice = stock.minute_volume[0].price;
+                        const lastPrice = stock.minute_volume[stock.minute_volume.length - 1].price;
+                        const priceChange = lastPrice - firstPrice;
+                        return (
+                          <div className="price-summary">
+                            <span className="price-range">
+                              价格区间: {minPrice.toFixed(2)} - {maxPrice.toFixed(2)}
+                            </span>
+                            <span className={`price-change ${priceChange >= 0 ? 'up' : 'down'}`}>
+                              {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                      {/* 价格折线 + 成交量柱状图 */}
+                      <div className="chart-wrapper">
+                        {(() => {
+                          const prices = stock.minute_volume.map(m => m.price);
+                          const minPrice = Math.min(...prices);
+                          const maxPrice = Math.max(...prices);
+                          const priceRange = maxPrice - minPrice || 1;
+                          const maxVolume = Math.max(...stock.minute_volume.map(m => m.volume));
+                          
+                          // 生成价格折线的SVG路径
+                          const points = stock.minute_volume.map((m, idx) => {
+                            const x = (idx / (stock.minute_volume!.length - 1)) * 100;
+                            const y = 100 - ((m.price - minPrice) / priceRange) * 100;
+                            return `${x},${y}`;
+                          }).join(' ');
+                          
+                          return (
+                            <>
+                              {/* 成交量柱状图 */}
+                              <div className="chart-container">
+                                {stock.minute_volume.map((m, idx) => (
+                                  <div 
+                                    key={idx} 
+                                    className="volume-bar"
+                                    style={{ 
+                                      height: `${maxVolume > 0 ? (m.volume / maxVolume) * 100 : 0}%`,
+                                      opacity: 0.3 + (idx / stock.minute_volume!.length) * 0.5
+                                    }}
+                                    title={`${m.time}\n价格: ${m.price.toFixed(2)}\n成交量: ${m.volume}手`}
+                                  />
+                                ))}
+                              </div>
+                              {/* 价格折线叠加 */}
+                              <svg className="price-line-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+                                <polyline
+                                  points={points}
+                                  fill="none"
+                                  stroke="var(--color-gold)"
+                                  strokeWidth="2"
+                                  vectorEffect="non-scaling-stroke"
+                                />
+                              </svg>
+                            </>
+                          );
+                        })()}
+                      </div>
+                      <div className="chart-labels">
+                        <span>{stock.minute_volume[0]?.time}</span>
+                        <span className="chart-legend">
+                          <span className="legend-volume">■ 成交量</span>
+                          <span className="legend-price">— 价格</span>
+                        </span>
+                        <span>{stock.minute_volume[stock.minute_volume.length - 1]?.time}</span>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* 利空消息提示 */}
+                  {stock.negative_news && (
+                    <div className={`news-alert ${stock.negative_news.risk_level}`}>
+                      <div className="news-alert-header">
+                        <span className="news-icon">
+                          {stock.negative_news.has_negative_news ? '⚠️' : '✅'}
+                        </span>
+                        <span className="news-title">
+                          {stock.negative_news.has_negative_news 
+                            ? `发现 ${stock.negative_news.negative_count} 条利空消息` 
+                            : '近3日无利空消息'}
+                        </span>
+                        <span className={`risk-badge ${stock.negative_news.risk_level}`}>
+                          {stock.negative_news.risk_level === 'high' ? '高风险' : 
+                           stock.negative_news.risk_level === 'medium' ? '需关注' : '低风险'}
+                        </span>
+                      </div>
+                      {stock.negative_news.negative_news.length > 0 && (
+                        <div className="news-list">
+                          {stock.negative_news.negative_news.slice(0, 3).map((news, idx) => (
+                            <div key={idx} className="news-item">
+                              <span className="news-date">{news.date}</span>
+                              <span className="news-text">{news.title}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

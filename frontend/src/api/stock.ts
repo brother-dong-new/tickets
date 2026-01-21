@@ -24,6 +24,31 @@ export interface ScreenedStock {
   volume: number;
 }
 
+// 利空消息详情
+export interface NegativeNewsItem {
+  title: string;
+  date: string;
+  source: string;
+  keywords: string[];
+}
+
+// 利空消息检测结果
+export interface NegativeNewsInfo {
+  has_negative_news: boolean;
+  negative_count: number;
+  total_news_count: number;
+  negative_news: NegativeNewsItem[];
+  risk_level: 'low' | 'medium' | 'high';
+}
+
+// 分时成交量数据
+export interface MinuteVolumeItem {
+  time: string;
+  price: number;
+  volume: number;
+  cum_volume: number;
+}
+
 // 过滤后的精选股票信息
 export interface FilteredStock {
   code: string;
@@ -41,6 +66,8 @@ export interface FilteredStock {
     price_position: string;
     sector: string;
   };
+  negative_news?: NegativeNewsInfo;
+  minute_volume?: MinuteVolumeItem[];
 }
 
 // 分析结果

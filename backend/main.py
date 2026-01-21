@@ -205,6 +205,203 @@ DIGITAL_KEYWORDS = [
     "算力", "存储", "服务器", "安全", "光电", "集成", "微电"
 ]
 
+# 利空消息关键词
+NEGATIVE_KEYWORDS = [
+    # 业绩相关
+    "亏损", "下滑", "下降", "减少", "预亏", "预减", "首亏", "续亏", "巨亏",
+    # 监管相关
+    "处罚", "立案", "调查", "警示", "问询", "违规", "违法", "整改", "罚款",
+    # 风险相关
+    "诉讼", "仲裁", "纠纷", "索赔", "败诉", "冻结", "查封",
+    # 股权相关
+    "减持", "清仓", "质押", "爆仓", "平仓", "强制执行",
+    # 经营相关
+    "停产", "停工", "召回", "事故", "退市", "暂停上市", "终止上市",
+    "破产", "重整", "清算", "解散",
+    # ST相关
+    "ST", "*ST", "风险警示", "退市风险",
+    # 其他
+    "取消", "终止", "失败", "延期", "推迟", "负面", "不利"
+]
+
+
+def get_stock_news(code: str, days: int = 3) -> List[Dict[str, Any]]:
+    """获取股票相关新闻和公告（东方财富）"""
+    news_list = []
+    
+    try:
+        # 获取公司公告
+        # 沪市代码以6开头，深市其他
+        if code.startswith('6'):
+            market = "SH"
+        else:
+            market = "SZ"
+        
+        # 东方财富公告接口
+        url = f"https://np-anotice-stock.eastmoney.com/api/security/ann?sr=-1&page_size=30&page_index=1&ann_type=A&stock_list={market}{code}&f_node=0"
+        
+        cmd = [
+            'curl', '-s', '--connect-timeout', '10',
+            '-H', 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            '-H', 'Referer: https://data.eastmoney.com/',
+            url
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        
+        if result.returncode == 0 and result.stdout:
+            data = json.loads(result.stdout)
+            if data.get('success') and data.get('data', {}).get('list'):
+                # 计算3天前的日期
+                three_days_ago = datetime.now() - timedelta(days=days)
+                
+                for item in data['data']['list']:
+                    try:
+                        # 解析公告时间
+                        notice_date_str = item.get('notice_date', '')
+                        if notice_date_str:
+                            notice_date = datetime.strptime(notice_date_str[:10], '%Y-%m-%d')
+                            
+                            # 只保留最近N天的公告
+                            if notice_date >= three_days_ago:
+                                news_list.append({
+                                    'title': item.get('title', ''),
+                                    'date': notice_date_str[:10],
+                                    'type': 'announcement',
+                                    'source': '公司公告'
+                                })
+                    except Exception:
+                        continue
+    except Exception as e:
+        print(f"获取公告失败 {code}: {e}")
+    
+    try:
+        # 获取股票新闻（东方财富搜索）
+        search_url = f"https://searchapi.eastmoney.com/api/Info/search?appid=default&searchScope=&type=NP&pageNo=1&pageSize=20&keyword={code}"
+        
+        cmd = [
+            'curl', '-s', '--connect-timeout', '10',
+            '-H', 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            '-H', 'Referer: https://so.eastmoney.com/',
+            search_url
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        
+        if result.returncode == 0 and result.stdout:
+            data = json.loads(result.stdout)
+            if data.get('result') and data['result'].get('data'):
+                three_days_ago = datetime.now() - timedelta(days=days)
+                
+                for item in data['result']['data']:
+                    try:
+                        title = item.get('title', '').replace('<em>', '').replace('</em>', '')
+                        date_str = item.get('datetime', '')[:10]
+                        
+                        if date_str:
+                            news_date = datetime.strptime(date_str, '%Y-%m-%d')
+                            if news_date >= three_days_ago:
+                                news_list.append({
+                                    'title': title,
+                                    'date': date_str,
+                                    'type': 'news',
+                                    'source': item.get('source', '财经新闻')
+                                })
+                    except Exception:
+                        continue
+    except Exception as e:
+        print(f"获取新闻失败 {code}: {e}")
+    
+    return news_list
+
+
+def get_minute_data(code: str, minutes: int = 30) -> List[Dict[str, Any]]:
+    """获取分时成交量数据（最近N分钟）"""
+    try:
+        # 确定市场前缀
+        if code.startswith('6') or code.startswith('9'):
+            symbol = f"sh{code}"
+        else:
+            symbol = f"sz{code}"
+        
+        url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}"
+        
+        cmd = ['curl', '-s', '--connect-timeout', '10', url]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        
+        if result.returncode == 0 and result.stdout:
+            data = json.loads(result.stdout)
+            
+            if data.get('code') == 0 and data.get('data', {}).get(symbol, {}).get('data', {}).get('data'):
+                minute_data = data['data'][symbol]['data']['data']
+                
+                # 解析分时数据
+                # 格式: "0930 11.03 5008 5523824.00"
+                # 时间 价格 累计成交量 累计成交额
+                parsed = []
+                prev_volume = 0
+                
+                for item in minute_data:
+                    parts = item.split(' ')
+                    if len(parts) >= 4:
+                        time_str = parts[0]
+                        price = float(parts[1])
+                        cum_volume = int(parts[2])  # 累计成交量（手）
+                        
+                        # 计算当前分钟的成交量（增量）
+                        volume = cum_volume - prev_volume
+                        prev_volume = cum_volume
+                        
+                        parsed.append({
+                            'time': f"{time_str[:2]}:{time_str[2:]}",
+                            'price': price,
+                            'volume': volume,  # 单分钟成交量（手）
+                            'cum_volume': cum_volume
+                        })
+                
+                # 只返回最近N分钟的数据
+                return parsed[-minutes:] if len(parsed) > minutes else parsed
+        
+        return []
+    except Exception as e:
+        print(f"获取分时数据失败 {code}: {e}")
+        return []
+
+
+def check_negative_news(code: str, days: int = 3) -> Dict[str, Any]:
+    """检查是否有利空消息"""
+    news_list = get_stock_news(code, days)
+    
+    negative_news = []
+    
+    for news in news_list:
+        title = news.get('title', '')
+        is_negative = False
+        matched_keywords = []
+        
+        for keyword in NEGATIVE_KEYWORDS:
+            if keyword in title:
+                is_negative = True
+                matched_keywords.append(keyword)
+        
+        if is_negative:
+            negative_news.append({
+                'title': title,
+                'date': news.get('date', ''),
+                'source': news.get('source', ''),
+                'keywords': matched_keywords
+            })
+    
+    has_negative = len(negative_news) > 0
+    
+    return {
+        'has_negative_news': has_negative,
+        'negative_count': len(negative_news),
+        'total_news_count': len(news_list),
+        'negative_news': negative_news[:5],  # 最多返回5条
+        'risk_level': 'high' if len(negative_news) >= 3 else ('medium' if len(negative_news) >= 1 else 'low')
+    }
+
 
 def is_digital_economy_stock(code: str, name: str = "") -> bool:
     """判断是否属于数字经济板块"""
@@ -448,6 +645,11 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
             analysis_results.append(analysis)
             
             if has_volume_pattern and above_ma5_high and is_digital:
+                # 检查利空消息
+                negative_info = check_negative_news(code, days=3)
+                # 获取最近30分钟成交量数据
+                minute_data = get_minute_data(code, minutes=30)
+                
                 qualified_stocks.append({
                     "code": code,
                     "name": stock_name,
@@ -463,7 +665,9 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                         "volume_pattern": "阶梯式放量 ✓",
                         "price_position": "站稳5日线+近期高点 ✓",
                         "sector": "数字经济板块 ✓"
-                    }
+                    },
+                    "negative_news": negative_info,
+                    "minute_volume": minute_data
                 })
         
         # 如果不足3只，降低条件
@@ -478,6 +682,11 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                                  analysis["above_ma5_high"], 
                                  analysis["is_digital_economy"]])
                     if score >= 2:
+                        # 检查利空消息
+                        negative_info = check_negative_news(analysis["code"], days=3)
+                        # 获取最近30分钟成交量数据
+                        minute_data = get_minute_data(analysis["code"], minutes=30)
+                        
                         qualified_stocks.append({
                             "code": analysis["code"],
                             "name": analysis["name"],
@@ -491,7 +700,9 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                                 "volume_pattern": "阶梯式放量 ✓" if analysis["has_volume_pattern"] else "放量不明显",
                                 "price_position": "站稳5日线+近期高点 ✓" if analysis["above_ma5_high"] else "未站稳",
                                 "sector": "数字经济板块 ✓" if analysis["is_digital_economy"] else "非数字经济"
-                            }
+                            },
+                            "negative_news": negative_info,
+                            "minute_volume": minute_data
                         })
                         
                 if len(qualified_stocks) >= 3:
