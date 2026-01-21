@@ -1,11 +1,13 @@
 """
 A股行情数据API服务
-使用 FastAPI + 直接HTTP请求获取实时股票数据
+使用 FastAPI + 腾讯股票API 获取实时股票数据
 """
 
 import os
+import re
 import subprocess
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 禁用代理
 os.environ['NO_PROXY'] = '*'
@@ -16,244 +18,14 @@ for key in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
-
-
-def fetch_with_curl(url: str, timeout: int = 30, headers: Dict[str, str] = None, encoding: str = 'gbk') -> str:
-    """使用系统curl获取数据，绕过Python SSL问题"""
-    try:
-        cmd = ['curl', '-s', '--connect-timeout', str(timeout)]
-        if headers:
-            for key, value in headers.items():
-                cmd.extend(['-H', f'{key}: {value}'])
-        cmd.append(url)
-        
-        result = subprocess.run(cmd, capture_output=True, timeout=timeout + 5)
-        if result.returncode == 0:
-            # 尝试用指定编码解码，失败则尝试其他编码
-            for enc in [encoding, 'gbk', 'gb2312', 'utf-8', 'latin-1']:
-                try:
-                    return result.stdout.decode(enc)
-                except (UnicodeDecodeError, LookupError):
-                    continue
-            return result.stdout.decode('latin-1')  # 最后的fallback
-        raise Exception(f"curl failed: {result.stderr.decode('utf-8', errors='ignore')}")
-    except subprocess.TimeoutExpired:
-        raise Exception("请求超时")
-
-
-def get_all_stock_codes() -> List[str]:
-    """获取所有A股股票代码"""
-    # 沪市主板: 600xxx, 601xxx, 603xxx, 605xxx
-    # 深市主板: 000xxx, 001xxx
-    # 创业板: 300xxx, 301xxx
-    # 科创板: 688xxx, 689xxx
-    codes = []
-    
-    # 生成常见的股票代码范围
-    for prefix in ['600', '601', '603', '605']:
-        for i in range(1000):
-            codes.append(f"sh{prefix}{i:03d}")
-    
-    for prefix in ['000', '001', '002', '003']:
-        for i in range(1000):
-            codes.append(f"sz{prefix}{i:03d}")
-    
-    for prefix in ['300', '301']:
-        for i in range(1000):
-            codes.append(f"sz{prefix}{i:03d}")
-    
-    for prefix in ['688']:
-        for i in range(1000):
-            codes.append(f"sh{prefix}{i:03d}")
-    
-    return codes
-
-
-def parse_sina_stock_data(data: str) -> List[Dict]:
-    """解析新浪股票数据"""
-    import re
-    results = []
-    
-    lines = data.strip().split('\n')
-    for line in lines:
-        if not line or '=""' in line:
-            continue
-        
-        match = re.match(r'var hq_str_(\w+)="(.*)";?', line)
-        if not match:
-            continue
-        
-        code_full = match.group(1)
-        values = match.group(2)
-        
-        if not values:
-            continue
-        
-        parts = values.split(',')
-        if len(parts) < 32:
-            continue
-        
-        try:
-            # 新浪数据格式：名称,今开,昨收,当前价,最高,最低,买入价,卖出价,成交量,成交额...
-            code = code_full[2:]  # 去掉sh/sz前缀
-            name = parts[0]
-            open_price = float(parts[1]) if parts[1] else 0
-            pre_close = float(parts[2]) if parts[2] else 0
-            current_price = float(parts[3]) if parts[3] else 0
-            high = float(parts[4]) if parts[4] else 0
-            low = float(parts[5]) if parts[5] else 0
-            volume = float(parts[8]) if parts[8] else 0  # 成交量（股）
-            amount = float(parts[9]) if parts[9] else 0  # 成交额
-            
-            if current_price <= 0 or pre_close <= 0:
-                continue
-            
-            change = current_price - pre_close
-            change_percent = (change / pre_close) * 100 if pre_close > 0 else 0
-            
-            results.append({
-                '代码': code,
-                '名称': name,
-                '最新价': current_price,
-                '涨跌额': round(change, 2),
-                '涨跌幅': round(change_percent, 2),
-                '成交量': volume / 100,  # 转换为手
-                '成交额': amount,
-                '今开': open_price,
-                '昨收': pre_close,
-                '最高': high,
-                '最低': low,
-                '换手率': 0,  # 新浪不提供
-                '量比': 1.5,  # 默认值，后续可优化
-                '流通市值': 100 * 100000000,  # 默认100亿，后续可优化
-            })
-        except (ValueError, IndexError):
-            continue
-    
-    return results
-
-
-def get_stock_list_em() -> pd.DataFrame:
-    """获取A股实时行情数据（使用新浪API）"""
-    # 获取热门股票代码列表（为了速度，只获取部分股票）
-    # 这里使用预定义的热门股票池
-    hot_codes = []
-    
-    # 沪市主板热门
-    for i in range(600, 700):
-        hot_codes.append(f"sh600{i:03d}"[:8])
-    for i in range(0, 100):
-        hot_codes.append(f"sh601{i:03d}")
-    for i in range(0, 200):
-        hot_codes.append(f"sh603{i:03d}")
-    
-    # 深市主板
-    for i in range(0, 200):
-        hot_codes.append(f"sz000{i:03d}")
-    for i in range(0, 100):
-        hot_codes.append(f"sz002{i:03d}")
-    
-    # 创业板
-    for i in range(0, 300):
-        hot_codes.append(f"sz300{i:03d}")
-    
-    # 科创板
-    for i in range(0, 100):
-        hot_codes.append(f"sh688{i:03d}")
-    
-    # 分批请求（每批50个）
-    all_results = []
-    batch_size = 50
-    
-    for i in range(0, min(len(hot_codes), 500), batch_size):
-        batch = hot_codes[i:i+batch_size]
-        codes_str = ','.join(batch)
-        
-        url = f"https://hq.sinajs.cn/list={codes_str}"
-        headers = {
-            'Referer': 'https://finance.sina.com.cn',
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        }
-        
-        try:
-            data = fetch_with_curl(url, headers=headers)
-            results = parse_sina_stock_data(data)
-            all_results.extend(results)
-        except Exception as e:
-            print(f"获取批次 {i} 失败: {e}")
-            continue
-    
-    if not all_results:
-        raise Exception("获取数据失败，无有效股票数据")
-    
-    return pd.DataFrame(all_results)
-
-
-def get_stock_history_em(symbol: str, period: str = "daily", days: int = 120) -> pd.DataFrame:
-    """获取股票历史K线数据（使用新浪API）"""
-    # 确定市场代码
-    if symbol.startswith('6'):
-        market = 'sh'
-    else:
-        market = 'sz'
-    
-    full_code = f"{market}{symbol}"
-    
-    # 新浪K线API
-    # 周期: 5=5分钟, 15=15分钟, 30=30分钟, 60=60分钟, day=日K, week=周K, month=月K
-    period_map = {'daily': 'day', 'weekly': 'week', 'monthly': 'month'}
-    sina_period = period_map.get(period, 'day')
-    
-    url = f"https://quotes.sina.cn/cn/api/jsonp.php/var%20_{full_code}_{sina_period}/CN_MarketDataService.getKLineData?symbol={full_code}&scale=240&ma=no&datalen={days}"
-    
-    headers = {
-        'Referer': 'https://finance.sina.com.cn',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-    }
-    
-    try:
-        data = fetch_with_curl(url, headers=headers)
-        
-        # 解析JSONP格式
-        import re
-        match = re.search(r'\[.*\]', data)
-        if not match:
-            raise Exception("解析K线数据失败")
-        
-        klines = json.loads(match.group())
-        
-        records = []
-        for k in klines:
-            records.append({
-                '日期': k.get('day', ''),
-                '开盘': float(k.get('open', 0)),
-                '收盘': float(k.get('close', 0)),
-                '最高': float(k.get('high', 0)),
-                '最低': float(k.get('low', 0)),
-                '成交量': float(k.get('volume', 0)) / 100,  # 转换为手
-                '成交额': 0,
-                '涨跌幅': 0
-            })
-        
-        # 计算涨跌幅
-        for i in range(1, len(records)):
-            pre_close = records[i-1]['收盘']
-            if pre_close > 0:
-                records[i]['涨跌幅'] = round((records[i]['收盘'] - pre_close) / pre_close * 100, 2)
-        
-        return pd.DataFrame(records)
-    except Exception as e:
-        raise Exception(f"获取K线数据失败: {e}")
 
 app = FastAPI(
     title="A股行情API",
     description="提供A股实时行情、K线数据、股票筛选等接口",
-    version="2.0.0"
+    version="2.3.0"
 )
 
 # 配置CORS
@@ -266,162 +38,221 @@ app.add_middleware(
 )
 
 
-class StockInfo(BaseModel):
-    """股票基本信息"""
-    code: str
-    name: str
-    price: float
-    change: float
-    change_percent: float
-    volume: float
-    amount: float
-    high: float
-    low: float
-    open: float
-    pre_close: float
+def fetch_qq_stock_data(codes: List[str], timeout: int = 30) -> str:
+    """使用curl调用腾讯股票API"""
+    try:
+        # 格式化代码：sh600000, sz000001
+        formatted_codes = ",".join(codes)
+        url = f"https://qt.gtimg.cn/q={formatted_codes}"
+        
+        cmd = ['curl', '-s', '--connect-timeout', str(timeout), url]
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout + 5)
+        
+        if result.returncode == 0:
+            # 尝试用gbk解码
+            for enc in ['gbk', 'gb2312', 'utf-8', 'latin-1']:
+                try:
+                    return result.stdout.decode(enc)
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            return result.stdout.decode('latin-1')
+        raise Exception(f"请求失败: {result.stderr.decode('utf-8', errors='ignore')}")
+    except subprocess.TimeoutExpired:
+        raise Exception("请求超时")
 
 
-class KLineData(BaseModel):
-    """K线数据"""
-    date: str
-    open: float
-    close: float
-    high: float
-    low: float
-    volume: float
+def fetch_qq_kline_data(code: str, days: int = 120) -> Dict[str, Any]:
+    """获取腾讯K线数据"""
+    try:
+        # 确定市场前缀
+        if code.startswith('6') or code.startswith('9'):
+            symbol = f"sh{code}"
+        else:
+            symbol = f"sz{code}"
+        
+        start_date = (datetime.now() - timedelta(days=days*2)).strftime('%Y-%m-%d')
+        url = f"https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get?param={symbol},day,{start_date},,{days},qfq"
+        
+        cmd = ['curl', '-s', '--connect-timeout', '15', url]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        
+        if result.returncode == 0 and result.stdout:
+            return json.loads(result.stdout)
+        return {}
+    except Exception as e:
+        print(f"获取K线数据失败: {e}")
+        return {}
 
 
-# 数字经济相关板块关键词
-DIGITAL_ECONOMY_KEYWORDS = [
-    "数字经济", "数据要素", "人工智能", "AI", "大数据", "云计算", 
-    "区块链", "元宇宙", "算力", "芯片", "半导体", "软件", 
-    "信息技术", "互联网", "物联网", "5G", "数字货币", "金融科技",
-    "智能", "网络安全", "数据中心", "服务器", "存储", "通信"
+def parse_qq_stock_line(line: str) -> Dict[str, Any]:
+    """解析腾讯股票数据行"""
+    # 格式: v_sh600000="1~浦发银行~600000~10.85~..."
+    match = re.match(r'v_(\w+)="(.*)";?', line.strip())
+    if not match:
+        return None
+    
+    full_code = match.group(1)
+    data = match.group(2)
+    
+    if not data or data == '':
+        return None
+    
+    parts = data.split('~')
+    if len(parts) < 50:
+        return None
+    
+    try:
+        # 腾讯数据字段说明：
+        # 0: 未知, 1: 股票名称, 2: 代码, 3: 最新价, 4: 昨收
+        # 5: 今开, 6: 成交量(手), 31: 涨跌额, 32: 涨跌幅
+        # 38: 换手率, 39: 市盈率, 44: 最高, 45: 最低
+        # 46: 振幅, 47: 流通市值(亿), 48: 总市值(亿)
+        # 49: 市净率, 52: 量比
+        
+        price = float(parts[3]) if parts[3] and parts[3] != '' else 0
+        if price <= 0:
+            return None
+        
+        return {
+            'code': parts[2],
+            'name': parts[1],
+            'price': price,
+            'pre_close': float(parts[4]) if parts[4] else 0,
+            'open': float(parts[5]) if parts[5] else 0,
+            'volume': float(parts[6]) if parts[6] else 0,  # 手
+            'change': float(parts[31]) if len(parts) > 31 and parts[31] else 0,
+            'change_percent': float(parts[32]) if len(parts) > 32 and parts[32] else 0,
+            'high': float(parts[33]) if len(parts) > 33 and parts[33] else 0,
+            'low': float(parts[34]) if len(parts) > 34 and parts[34] else 0,
+            'amount': float(parts[37]) if len(parts) > 37 and parts[37] else 0,  # 万元
+            'turnover': float(parts[38]) if len(parts) > 38 and parts[38] else 0,
+            'pe_ratio': float(parts[39]) if len(parts) > 39 and parts[39] else 0,
+            'market_cap': float(parts[45]) if len(parts) > 45 and parts[45] else 0,  # 亿
+            'total_value': float(parts[46]) if len(parts) > 46 and parts[46] else 0,  # 亿
+            'volume_ratio': float(parts[49]) if len(parts) > 49 and parts[49] else 1.0,
+        }
+    except (ValueError, IndexError) as e:
+        return None
+
+
+def generate_stock_codes() -> List[str]:
+    """生成A股代码列表"""
+    codes = []
+    
+    # 沪市主板: 600xxx, 601xxx, 603xxx, 605xxx
+    for prefix in ['600', '601', '603', '605']:
+        for i in range(1000):
+            codes.append(f"sh{prefix}{i:03d}")
+    
+    # 深市主板: 000xxx, 001xxx, 002xxx, 003xxx
+    for prefix in ['000', '001', '002', '003']:
+        for i in range(1000):
+            codes.append(f"sz{prefix}{i:03d}")
+    
+    # 创业板: 300xxx, 301xxx
+    for prefix in ['300', '301']:
+        for i in range(1000):
+            codes.append(f"sz{prefix}{i:03d}")
+    
+    # 科创板: 688xxx
+    for i in range(1000):
+        codes.append(f"sh688{i:03d}")
+    
+    return codes
+
+
+def get_all_stocks_data() -> List[Dict[str, Any]]:
+    """获取所有A股实时数据"""
+    all_codes = generate_stock_codes()
+    batch_size = 80  # 每批80只
+    all_stocks = []
+    
+    def fetch_batch(batch_codes):
+        try:
+            data = fetch_qq_stock_data(batch_codes)
+            results = []
+            for line in data.strip().split('\n'):
+                if line:
+                    stock = parse_qq_stock_line(line)
+                    if stock:
+                        results.append(stock)
+            return results
+        except Exception as e:
+            print(f"获取批次失败: {e}")
+            return []
+    
+    # 使用线程池并行获取
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for i in range(0, len(all_codes), batch_size):
+            batch = all_codes[i:i+batch_size]
+            futures.append(executor.submit(fetch_batch, batch))
+        
+        for future in as_completed(futures):
+            try:
+                stocks = future.result()
+                all_stocks.extend(stocks)
+            except Exception as e:
+                print(f"处理批次失败: {e}")
+    
+    return all_stocks
+
+
+# 数字经济板块关键词
+DIGITAL_KEYWORDS = [
+    "软件", "科技", "信息", "数据", "智能", "网络", "电子",
+    "计算", "云", "芯", "半导体", "通信", "互联", "数字",
+    "算力", "存储", "服务器", "安全", "光电", "集成", "微电"
 ]
 
 
-def get_index_list_em() -> pd.DataFrame:
-    """获取主要指数行情数据（使用新浪API）"""
-    # 主要指数代码（新浪格式）
-    indices = ["s_sh000001", "s_sz399001", "s_sz399006", "s_sh000300", "s_sh000905"]
-    names = ["上证指数", "深证成指", "创业板指", "沪深300", "中证500"]
-    
-    codes_str = ','.join(indices)
-    url = f"https://hq.sinajs.cn/list={codes_str}"
-    headers = {
-        'Referer': 'https://finance.sina.com.cn',
-        'User-Agent': 'Mozilla/5.0'
-    }
-    
-    result = []
-    try:
-        data = fetch_with_curl(url, headers=headers)
-        lines = data.strip().split('\n')
-        
-        for i, line in enumerate(lines):
-            if not line or '=""' in line:
-                continue
-            
-            import re
-            match = re.search(r'"([^"]*)"', line)
-            if not match:
-                continue
-            
-            values = match.group(1)
-            parts = values.split(',')
-            
-            if len(parts) >= 6:
-                try:
-                    result.append({
-                        '代码': indices[i].replace('s_', '')[2:],
-                        '名称': names[i] if i < len(names) else parts[0],
-                        '最新价': float(parts[1]) if parts[1] else 0,
-                        '涨跌额': float(parts[2]) if parts[2] else 0,
-                        '涨跌幅': float(parts[3]) if parts[3] else 0,
-                        '成交量': float(parts[4]) if parts[4] else 0,
-                        '成交额': float(parts[5]) if parts[5] else 0,
-                    })
-                except (ValueError, IndexError):
-                    continue
-    except Exception as e:
-        print(f"获取指数失败: {e}")
-    
-    return pd.DataFrame(result)
-
-
 def is_digital_economy_stock(code: str, name: str = "") -> bool:
-    """
-    判断是否属于数字经济板块
-    简化版本：通过股票名称关键词匹配
-    """
-    # 数字经济相关股票名称关键词
-    digital_keywords = [
-        "软件", "科技", "信息", "数据", "智能", "网络", "电子",
-        "计算", "云", "芯", "半导体", "通信", "互联", "数字",
-        "AI", "算力", "存储", "服务器", "安全", "金融科技"
-    ]
-    
-    # 通过股票名称判断
-    name_upper = name.upper()
-    for keyword in digital_keywords:
-        if keyword in name or keyword.upper() in name_upper:
-            return True
-    
-    # 通过代码前缀判断（科创板、创业板更可能是科技股）
-    # 688开头是科创板，300开头是创业板
-    if code.startswith('688') or code.startswith('300'):
+    """判断是否属于数字经济板块"""
+    # 科创板(688)和创业板(300)中的科技股更可能属于数字经济
+    if code.startswith('688'):
         return True
+    
+    # 通过名称关键词匹配
+    for keyword in DIGITAL_KEYWORDS:
+        if keyword in name:
+            return True
     
     return False
 
 
 def check_volume_pattern(kline_data: List[dict]) -> bool:
-    """
-    检查是否阶梯式放量
-    阶梯式放量：最近几天的成交量呈现逐步放大的趋势
-    """
+    """检查是否阶梯式放量"""
     if len(kline_data) < 5:
         return False
     
-    # 取最近5天的成交量
     volumes = [d["volume"] for d in kline_data[-5:]]
-    
-    # 计算成交量的5日均值
     avg_volume = sum(volumes) / len(volumes)
     
-    # 检查最近3天是否呈现放量趋势（后一天比前一天大）
+    # 检查最近3天是否呈现放量趋势
     recent_3 = volumes[-3:]
     increasing_count = 0
     for i in range(1, len(recent_3)):
-        if recent_3[i] > recent_3[i-1] * 0.9:  # 允许10%的波动
+        if recent_3[i] > recent_3[i-1] * 0.9:
             increasing_count += 1
     
-    # 最近一天的量是否大于5日均量的1.2倍
     latest_volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 0
     
     return increasing_count >= 1 and latest_volume_ratio > 1.2
 
 
 def check_above_ma5_and_high(kline_data: List[dict], current_price: float) -> bool:
-    """
-    检查是否站稳5日线+近期高点
-    """
+    """检查是否站稳5日线+近期高点"""
     if len(kline_data) < 10:
         return False
     
-    # 计算5日均线
     closes = [d["close"] for d in kline_data[-10:]]
     ma5 = sum(closes[-5:]) / 5
     
-    # 计算近期（10日）高点
     highs = [d["high"] for d in kline_data[-10:]]
-    recent_high = max(highs[:-1])  # 排除最近一天
+    recent_high = max(highs[:-1]) if len(highs) > 1 else highs[0]
     
-    # 条件1: 当前价格在5日线之上
-    above_ma5 = current_price > ma5 * 0.98  # 允许2%的误差
-    
-    # 条件2: 当前价格接近或突破近期高点
-    near_high = current_price >= recent_high * 0.97  # 在近期高点的97%以上
+    above_ma5 = current_price > ma5 * 0.98
+    near_high = current_price >= recent_high * 0.97
     
     return above_ma5 and near_high
 
@@ -430,20 +261,18 @@ def calculate_support_level(kline_data: List[dict]) -> float:
     """计算支撑位"""
     if len(kline_data) < 5:
         return 0
-    
-    # 使用最近5天的最低价作为支撑参考
     lows = [d["low"] for d in kline_data[-5:]]
     return min(lows)
 
 
 @app.get("/")
 async def root():
-    """API根路径"""
     return {
         "message": "A股行情API服务",
-        "version": "2.0.0",
+        "version": "2.3.0",
+        "data_source": "腾讯股票 (qt.gtimg.cn)",
         "endpoints": [
-            "/api/screen - 筛选股票（涨幅/量比/市值）",
+            "/api/screen - 筛选股票",
             "/api/filter - 过滤精选股票",
             "/api/realtime - 获取实时行情",
             "/api/kline - 获取K线数据",
@@ -461,47 +290,54 @@ async def screen_stocks(
     market_cap_max: float = Query(300, description="流通市值上限(亿)"),
     limit: int = Query(20, description="返回数量")
 ):
-    """
-    筛选股票
-    条件：涨幅3%-5%、量比1.5-3、流通市值50-300亿
-    """
+    """筛选股票"""
     try:
-        # 获取A股实时行情
-        df = get_stock_list_em()
+        print(f"开始筛选股票: 涨幅{change_min}%-{change_max}%, 量比{volume_ratio_min}-{volume_ratio_max}, 市值{market_cap_min}-{market_cap_max}亿")
         
-        # 筛选条件
-        # 1. 涨幅在指定范围内
-        df = df[df["涨跌幅"].notna()]
-        df = df[(df["涨跌幅"] >= change_min) & (df["涨跌幅"] <= change_max)]
+        # 获取所有股票数据
+        all_stocks = get_all_stocks_data()
+        print(f"获取到 {len(all_stocks)} 只股票数据")
         
-        # 2. 量比在指定范围内
-        df = df[df["量比"].notna()]
-        df = df[(df["量比"] >= volume_ratio_min) & (df["量比"] <= volume_ratio_max)]
+        # 筛选
+        filtered = []
+        for stock in all_stocks:
+            # 排除ST股票
+            if 'ST' in stock['name'] or 'st' in stock['name']:
+                continue
+            
+            # 涨幅筛选
+            if not (change_min <= stock['change_percent'] <= change_max):
+                continue
+            
+            # 量比筛选
+            if not (volume_ratio_min <= stock['volume_ratio'] <= volume_ratio_max):
+                continue
+            
+            # 流通市值筛选（亿）
+            if not (market_cap_min <= stock['market_cap'] <= market_cap_max):
+                continue
+            
+            filtered.append(stock)
         
-        # 3. 流通市值在指定范围内（单位：亿）
-        df = df[df["流通市值"].notna()]
-        df["流通市值_亿"] = df["流通市值"] / 100000000
-        df = df[(df["流通市值_亿"] >= market_cap_min) & (df["流通市值_亿"] <= market_cap_max)]
+        # 按涨幅排序
+        filtered.sort(key=lambda x: x['change_percent'], reverse=True)
+        filtered = filtered[:limit]
         
-        # 排除ST股票
-        df = df[~df["名称"].str.contains("ST", na=False)]
-        
-        # 按涨幅排序，取前N只
-        df = df.sort_values("涨跌幅", ascending=False).head(limit)
+        print(f"筛选后剩余 {len(filtered)} 只股票")
         
         result = []
-        for _, row in df.iterrows():
+        for stock in filtered:
             result.append({
-                "code": row["代码"],
-                "name": row["名称"],
-                "price": float(row.get("最新价", 0) or 0),
-                "change": float(row.get("涨跌额", 0) or 0),
-                "change_percent": float(row.get("涨跌幅", 0) or 0),
-                "volume_ratio": float(row.get("量比", 0) or 0),
-                "turnover": float(row.get("换手率", 0) or 0),
-                "market_cap": float(row.get("流通市值_亿", 0) or 0),
-                "amount": float(row.get("成交额", 0) or 0),
-                "volume": float(row.get("成交量", 0) or 0),
+                "code": stock['code'],
+                "name": stock['name'],
+                "price": stock['price'],
+                "change": stock['change'],
+                "change_percent": stock['change_percent'],
+                "volume_ratio": stock['volume_ratio'],
+                "turnover": stock['turnover'],
+                "market_cap": stock['market_cap'],
+                "amount": stock['amount'] * 10000,  # 转为元
+                "volume": stock['volume'] * 100,  # 转为股
             })
         
         return {
@@ -514,119 +350,134 @@ async def screen_stocks(
             "data": result
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"筛选股票失败: {str(e)}")
 
 
 @app.get("/api/filter")
 async def filter_stocks(codes: str = Query(..., description="股票代码列表，用逗号分隔")):
-    """
-    过滤精选股票
-    从给定的股票中筛选出：
-    1. 阶梯式放量
-    2. 站稳5日线+近期高点
-    3. 属于数字经济板块
-    返回最多3只符合条件的股票
-    """
+    """过滤精选股票"""
     try:
         code_list = [c.strip() for c in codes.split(",") if c.strip()]
         
         if not code_list:
             raise HTTPException(status_code=400, detail="请提供股票代码列表")
         
-        # 获取实时行情
-        df = get_stock_list_em()
+        # 格式化代码
+        formatted_codes = []
+        for code in code_list:
+            if code.startswith('6') or code.startswith('9'):
+                formatted_codes.append(f"sh{code}")
+            else:
+                formatted_codes.append(f"sz{code}")
+        
+        # 获取实时数据
+        data = fetch_qq_stock_data(formatted_codes)
+        stocks_map = {}
+        for line in data.strip().split('\n'):
+            if line:
+                stock = parse_qq_stock_line(line)
+                if stock:
+                    stocks_map[stock['code']] = stock
         
         qualified_stocks = []
         analysis_results = []
         
         for code in code_list:
+            if code not in stocks_map:
+                continue
+            
+            stock = stocks_map[code]
+            stock_name = stock['name']
+            current_price = stock['price']
+            
+            # 获取K线数据
+            kline_response = fetch_qq_kline_data(code)
+            kline_data = []
+            
             try:
-                stock_data = df[df["代码"] == code]
-                if stock_data.empty:
-                    continue
+                # 解析腾讯K线数据
+                if code.startswith('6') or code.startswith('9'):
+                    symbol = f"sh{code}"
+                else:
+                    symbol = f"sz{code}"
                 
-                row = stock_data.iloc[0]
-                current_price = float(row.get("最新价", 0) or 0)
-                
-                # 获取K线数据用于分析
-                kline_df = get_stock_history_em(symbol=code, period="daily")
-                if kline_df.empty or len(kline_df) < 10:
-                    continue
-                
-                kline_data = []
-                for _, k_row in kline_df.tail(20).iterrows():
-                    kline_data.append({
-                        "date": str(k_row["日期"]),
-                        "open": float(k_row["开盘"]),
-                        "close": float(k_row["收盘"]),
-                        "high": float(k_row["最高"]),
-                        "low": float(k_row["最低"]),
-                        "volume": float(k_row["成交量"]),
-                    })
-                
-                # 检查条件
-                stock_name = row.get("名称", "")
-                has_volume_pattern = check_volume_pattern(kline_data)
-                above_ma5_high = check_above_ma5_and_high(kline_data, current_price)
-                is_digital = is_digital_economy_stock(code, stock_name)
-                support_level = calculate_support_level(kline_data)
-                
-                # 计算5日均线
-                closes = [d["close"] for d in kline_data[-5:]]
-                ma5 = sum(closes) / 5 if closes else 0
-                
-                analysis = {
+                if 'data' in kline_response and symbol in kline_response['data']:
+                    qfqday = kline_response['data'][symbol].get('qfqday', [])
+                    for day in qfqday[-20:]:
+                        if len(day) >= 6:
+                            kline_data.append({
+                                "date": day[0],
+                                "open": float(day[1]),
+                                "close": float(day[2]),
+                                "high": float(day[3]),
+                                "low": float(day[4]),
+                                "volume": float(day[5]),
+                            })
+            except Exception as e:
+                print(f"解析K线数据失败: {e}")
+            
+            if len(kline_data) < 10:
+                continue
+            
+            # 检查条件
+            has_volume_pattern = check_volume_pattern(kline_data)
+            above_ma5_high = check_above_ma5_and_high(kline_data, current_price)
+            is_digital = is_digital_economy_stock(code, stock_name)
+            support_level = calculate_support_level(kline_data)
+            
+            closes = [d["close"] for d in kline_data[-5:]]
+            ma5 = sum(closes) / 5 if closes else 0
+            
+            analysis = {
+                "code": code,
+                "name": stock_name,
+                "price": current_price,
+                "change_percent": stock['change_percent'],
+                "volume_ratio": stock['volume_ratio'],
+                "market_cap": stock['market_cap'],
+                "ma5": round(ma5, 2),
+                "support_level": round(support_level, 2),
+                "has_volume_pattern": has_volume_pattern,
+                "above_ma5_high": above_ma5_high,
+                "is_digital_economy": is_digital,
+                "qualified": has_volume_pattern and above_ma5_high and is_digital
+            }
+            
+            analysis_results.append(analysis)
+            
+            if has_volume_pattern and above_ma5_high and is_digital:
+                qualified_stocks.append({
                     "code": code,
-                    "name": row["名称"],
+                    "name": stock_name,
                     "price": current_price,
-                    "change_percent": float(row.get("涨跌幅", 0) or 0),
-                    "volume_ratio": float(row.get("量比", 0) or 0),
-                    "market_cap": float(row.get("流通市值", 0) or 0) / 100000000,
+                    "change_percent": stock['change_percent'],
+                    "volume_ratio": stock['volume_ratio'],
+                    "market_cap": round(stock['market_cap'], 2),
+                    "turnover": stock['turnover'],
+                    "amount": stock['amount'] * 10000,
                     "ma5": round(ma5, 2),
                     "support_level": round(support_level, 2),
-                    "has_volume_pattern": has_volume_pattern,
-                    "above_ma5_high": above_ma5_high,
-                    "is_digital_economy": is_digital,
-                    "qualified": has_volume_pattern and above_ma5_high and is_digital
-                }
-                
-                analysis_results.append(analysis)
-                
-                # 如果满足所有条件
-                if has_volume_pattern and above_ma5_high and is_digital:
-                    qualified_stocks.append({
-                        "code": code,
-                        "name": row["名称"],
-                        "price": current_price,
-                        "change_percent": float(row.get("涨跌幅", 0) or 0),
-                        "volume_ratio": float(row.get("量比", 0) or 0),
-                        "market_cap": round(float(row.get("流通市值", 0) or 0) / 100000000, 2),
-                        "turnover": float(row.get("换手率", 0) or 0),
-                        "amount": float(row.get("成交额", 0) or 0),
-                        "ma5": round(ma5, 2),
-                        "support_level": round(support_level, 2),
-                        "analysis": {
-                            "volume_pattern": "阶梯式放量 ✓",
-                            "price_position": "站稳5日线+近期高点 ✓",
-                            "sector": "数字经济板块 ✓"
-                        }
-                    })
-                    
-            except Exception as e:
-                print(f"分析股票 {code} 失败: {e}")
-                continue
+                    "analysis": {
+                        "volume_pattern": "阶梯式放量 ✓",
+                        "price_position": "站稳5日线+近期高点 ✓",
+                        "sector": "数字经济板块 ✓"
+                    }
+                })
         
-        # 如果符合条件的股票不足3只，降低条件
+        # 如果不足3只，降低条件
         if len(qualified_stocks) < 3:
-            # 按满足条件数量排序，取前3只
-            for analysis in analysis_results:
+            for analysis in sorted(analysis_results, 
+                                   key=lambda x: sum([x["has_volume_pattern"], 
+                                                      x["above_ma5_high"], 
+                                                      x["is_digital_economy"]]), 
+                                   reverse=True):
                 if analysis["code"] not in [s["code"] for s in qualified_stocks]:
-                    score = sum([
-                        analysis["has_volume_pattern"],
-                        analysis["above_ma5_high"],
-                        analysis["is_digital_economy"]
-                    ])
-                    if score >= 2:  # 至少满足2个条件
+                    score = sum([analysis["has_volume_pattern"], 
+                                 analysis["above_ma5_high"], 
+                                 analysis["is_digital_economy"]])
+                    if score >= 2:
                         qualified_stocks.append({
                             "code": analysis["code"],
                             "name": analysis["name"],
@@ -642,59 +493,46 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                                 "sector": "数字经济板块 ✓" if analysis["is_digital_economy"] else "非数字经济"
                             }
                         })
-        
-        # 最多返回3只
-        qualified_stocks = qualified_stocks[:3]
+                        
+                if len(qualified_stocks) >= 3:
+                    break
         
         return {
-            "count": len(qualified_stocks),
+            "count": len(qualified_stocks[:3]),
             "total_analyzed": len(code_list),
             "filter_criteria": {
                 "volume_pattern": "阶梯式放量",
                 "price_position": "站稳5日线+近期高点",
                 "sector": "数字经济板块"
             },
-            "data": qualified_stocks,
-            "all_analysis": analysis_results  # 返回所有分析结果供前端展示
+            "data": qualified_stocks[:3],
+            "all_analysis": analysis_results
         }
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"过滤股票失败: {str(e)}")
 
 
 @app.get("/api/realtime")
-async def get_realtime_quote(code: str = Query(..., description="股票代码，如 000001")):
-    """
-    获取单只股票实时行情
-    """
+async def get_realtime_quote(code: str = Query(..., description="股票代码")):
+    """获取单只股票实时行情"""
     try:
-        # 获取实时行情
-        df = get_stock_list_em()
-        stock_data = df[df["代码"] == code]
+        if code.startswith('6') or code.startswith('9'):
+            formatted = f"sh{code}"
+        else:
+            formatted = f"sz{code}"
         
-        if stock_data.empty:
-            raise HTTPException(status_code=404, detail=f"未找到股票: {code}")
+        data = fetch_qq_stock_data([formatted])
+        for line in data.strip().split('\n'):
+            if line:
+                stock = parse_qq_stock_line(line)
+                if stock:
+                    return stock
         
-        row = stock_data.iloc[0]
-        return {
-            "code": code,
-            "name": row.get("名称", ""),
-            "price": float(row.get("最新价", 0) or 0),
-            "change": float(row.get("涨跌额", 0) or 0),
-            "change_percent": float(row.get("涨跌幅", 0) or 0),
-            "volume": float(row.get("成交量", 0) or 0),
-            "amount": float(row.get("成交额", 0) or 0),
-            "high": float(row.get("最高", 0) or 0),
-            "low": float(row.get("最低", 0) or 0),
-            "open": float(row.get("今开", 0) or 0),
-            "pre_close": float(row.get("昨收", 0) or 0),
-            "turnover": float(row.get("换手率", 0) or 0),
-            "volume_ratio": float(row.get("量比", 0) or 0),
-            "pe_ratio": float(row.get("市盈率-动态", 0) or 0),
-            "total_value": float(row.get("总市值", 0) or 0),
-            "market_cap": float(row.get("流通市值", 0) or 0) / 100000000,
-        }
+        raise HTTPException(status_code=404, detail=f"未找到股票: {code}")
     except HTTPException:
         raise
     except Exception as e:
@@ -704,37 +542,36 @@ async def get_realtime_quote(code: str = Query(..., description="股票代码，
 @app.get("/api/kline")
 async def get_kline_data(
     code: str = Query(..., description="股票代码"),
-    period: str = Query("daily", description="周期: daily, weekly, monthly"),
+    period: str = Query("daily", description="周期"),
     days: int = Query(90, description="获取天数")
 ):
-    """
-    获取K线历史数据
-    """
+    """获取K线历史数据"""
     try:
-        # 获取历史K线数据
-        df = get_stock_history_em(symbol=code, period=period, days=days)
+        kline_response = fetch_qq_kline_data(code, days)
         
-        if df.empty:
+        if code.startswith('6') or code.startswith('9'):
+            symbol = f"sh{code}"
+        else:
+            symbol = f"sz{code}"
+        
+        if 'data' not in kline_response or symbol not in kline_response['data']:
             raise HTTPException(status_code=404, detail=f"未找到股票K线数据: {code}")
         
-        result = []
-        for _, row in df.iterrows():
-            result.append({
-                "date": str(row["日期"]),
-                "open": float(row["开盘"]),
-                "close": float(row["收盘"]),
-                "high": float(row["最高"]),
-                "low": float(row["最低"]),
-                "volume": float(row["成交量"]),
-                "amount": float(row.get("成交额", 0)),
-                "change_percent": float(row.get("涨跌幅", 0)),
-            })
+        qfqday = kline_response['data'][symbol].get('qfqday', [])
         
-        return {
-            "code": code,
-            "period": period,
-            "data": result
-        }
+        result = []
+        for day in qfqday:
+            if len(day) >= 6:
+                result.append({
+                    "date": day[0],
+                    "open": float(day[1]),
+                    "close": float(day[2]),
+                    "high": float(day[3]),
+                    "low": float(day[4]),
+                    "volume": float(day[5]),
+                })
+        
+        return {"code": code, "period": period, "data": result}
     except HTTPException:
         raise
     except Exception as e:
@@ -743,55 +580,52 @@ async def get_kline_data(
 
 @app.get("/api/hot")
 async def get_hot_stocks(limit: int = Query(20, description="返回数量")):
-    """
-    获取热门股票（按成交额排序）
-    """
+    """获取热门股票（按成交额排序）"""
     try:
-        df = get_stock_list_em()
+        all_stocks = get_all_stocks_data()
         
         # 按成交额排序
-        df = df.sort_values("成交额", ascending=False).head(limit)
+        all_stocks.sort(key=lambda x: x['amount'], reverse=True)
+        top_stocks = all_stocks[:limit]
         
         result = []
-        for _, row in df.iterrows():
+        for stock in top_stocks:
             result.append({
-                "code": row["代码"],
-                "name": row["名称"],
-                "price": float(row.get("最新价", 0) or 0),
-                "change": float(row.get("涨跌额", 0) or 0),
-                "change_percent": float(row.get("涨跌幅", 0) or 0),
-                "volume": float(row.get("成交量", 0) or 0),
-                "amount": float(row.get("成交额", 0) or 0),
-                "turnover": float(row.get("换手率", 0) or 0),
+                "code": stock['code'],
+                "name": stock['name'],
+                "price": stock['price'],
+                "change_percent": stock['change_percent'],
+                "amount": stock['amount'] * 10000,
+                "turnover": stock['turnover'],
             })
         
-        return {
-            "count": len(result),
-            "data": result
-        }
+        return {"count": len(result), "data": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取热门股票失败: {str(e)}")
 
 
 @app.get("/api/index")
 async def get_index_data():
-    """
-    获取主要指数行情
-    """
+    """获取主要指数行情"""
     try:
-        df = get_index_list_em()
+        indices = ["sh000001", "sz399001", "sz399006", "sh000300", "sh000905"]
+        data = fetch_qq_stock_data(indices)
         
         result = []
-        for _, row in df.iterrows():
-            result.append({
-                "code": row["代码"],
-                "name": row["名称"],
-                "price": float(row.get("最新价", 0) or 0),
-                "change": float(row.get("涨跌额", 0) or 0),
-                "change_percent": float(row.get("涨跌幅", 0) or 0),
-                "volume": float(row.get("成交量", 0) or 0),
-                "amount": float(row.get("成交额", 0) or 0),
-            })
+        for line in data.strip().split('\n'):
+            if line:
+                # 指数数据解析略有不同
+                match = re.match(r'v_(\w+)="(.*)";?', line.strip())
+                if match:
+                    parts = match.group(2).split('~')
+                    if len(parts) > 5:
+                        result.append({
+                            "code": parts[2] if len(parts) > 2 else "",
+                            "name": parts[1] if len(parts) > 1 else "",
+                            "price": float(parts[3]) if len(parts) > 3 and parts[3] else 0,
+                            "change": float(parts[31]) if len(parts) > 31 and parts[31] else 0,
+                            "change_percent": float(parts[32]) if len(parts) > 32 and parts[32] else 0,
+                        })
         
         return {"data": result}
     except Exception as e:
