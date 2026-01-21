@@ -41,12 +41,20 @@ export interface NegativeNewsInfo {
   risk_level: 'low' | 'medium' | 'high';
 }
 
-// 分时成交量数据
+// 分时成交量数据项
 export interface MinuteVolumeItem {
   time: string;
   price: number;
   volume: number;
   cum_volume: number;
+}
+
+// 分时数据结果（包含时间范围信息）
+export interface MinuteVolumeResult {
+  data: MinuteVolumeItem[];
+  time_range: string;
+  is_after_close: boolean;
+  fetch_time: string;
 }
 
 // 尾盘走势分析
@@ -104,7 +112,7 @@ export interface AISelectedStock {
   warnings: string[];
   indicators: TechnicalIndicators;
   negative_news?: NegativeNewsInfo;
-  minute_volume?: MinuteVolumeItem[];
+  minute_volume?: MinuteVolumeResult;
   board_type?: BoardType;
 }
 
@@ -135,7 +143,7 @@ export interface FilteredStock {
     sector: string;
   };
   negative_news?: NegativeNewsInfo;
-  minute_volume?: MinuteVolumeItem[];
+  minute_volume?: MinuteVolumeResult;
   board_type?: BoardType;
 }
 

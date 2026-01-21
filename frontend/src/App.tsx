@@ -33,7 +33,7 @@ function App() {
         volume_ratio_max: 3,
         market_cap_min: 50,
         market_cap_max: 300,
-        limit: 20
+        limit: 30
       });
       setScreenedStocks(result.data);
       setState('screened');
@@ -277,6 +277,18 @@ function App() {
                       <span className="change up">+{stock.change_percent.toFixed(2)}%</span>
                     </div>
                   </div>
+                  {/* 数据时间信息 */}
+                  {stock.minute_volume && (
+                    <div className="data-time-info">
+                      <span className="time-icon">🕐</span>
+                      <span className="time-label">数据时间:</span>
+                      <span className="time-value">{stock.minute_volume.time_range}</span>
+                      {stock.minute_volume.is_after_close && (
+                        <span className="close-badge">已收盘</span>
+                      )}
+                      <span className="fetch-time">获取于 {stock.minute_volume.fetch_time}</span>
+                    </div>
+                  )}
                   
                   <div className="card-metrics">
                     <div className="metric">
@@ -316,21 +328,25 @@ function App() {
                   </div>
                   
                   {/* 30分钟成交量趋势图 */}
-                  {stock.minute_volume && stock.minute_volume.length > 0 && (
+                  {stock.minute_volume && stock.minute_volume.data && stock.minute_volume.data.length > 0 && (
                     <div className="volume-chart">
                       <div className="chart-header">
-                        <span className="chart-title">📊 近30分钟行情</span>
+                        <span className="chart-title">📊 尾盘行情</span>
                         <span className="chart-time">
-                          {stock.minute_volume[0]?.time} - {stock.minute_volume[stock.minute_volume.length - 1]?.time}
+                          {stock.minute_volume.time_range}
+                          {stock.minute_volume.is_after_close && (
+                            <span className="fetch-time"> (已收盘，获取于 {stock.minute_volume.fetch_time})</span>
+                          )}
                         </span>
                       </div>
                       {/* 价格区间显示 */}
                       {(() => {
-                        const prices = stock.minute_volume.map(m => m.price);
+                        const data = stock.minute_volume.data;
+                        const prices = data.map(m => m.price);
                         const minPrice = Math.min(...prices);
                         const maxPrice = Math.max(...prices);
-                        const firstPrice = stock.minute_volume[0].price;
-                        const lastPrice = stock.minute_volume[stock.minute_volume.length - 1].price;
+                        const firstPrice = data[0].price;
+                        const lastPrice = data[data.length - 1].price;
                         const priceChange = lastPrice - firstPrice;
                         return (
                           <div className="price-summary">
@@ -346,15 +362,16 @@ function App() {
                       {/* 价格折线 + 成交量柱状图 */}
                       <div className="chart-wrapper">
                         {(() => {
-                          const prices = stock.minute_volume.map(m => m.price);
+                          const data = stock.minute_volume.data;
+                          const prices = data.map(m => m.price);
                           const minPrice = Math.min(...prices);
                           const maxPrice = Math.max(...prices);
                           const priceRange = maxPrice - minPrice || 1;
-                          const maxVolume = Math.max(...stock.minute_volume.map(m => m.volume));
+                          const maxVolume = Math.max(...data.map(m => m.volume));
                           
                           // 生成价格折线的SVG路径
-                          const points = stock.minute_volume.map((m, idx) => {
-                            const x = (idx / (stock.minute_volume!.length - 1)) * 100;
+                          const points = data.map((m, idx) => {
+                            const x = (idx / (data.length - 1)) * 100;
                             const y = 100 - ((m.price - minPrice) / priceRange) * 100;
                             return `${x},${y}`;
                           }).join(' ');
@@ -363,13 +380,13 @@ function App() {
                             <>
                               {/* 成交量柱状图 */}
                               <div className="chart-container">
-                                {stock.minute_volume.map((m, idx) => (
+                                {data.map((m, idx) => (
                                   <div 
                                     key={idx} 
                                     className="volume-bar"
                                     style={{ 
                                       height: `${maxVolume > 0 ? (m.volume / maxVolume) * 100 : 0}%`,
-                                      opacity: 0.3 + (idx / stock.minute_volume!.length) * 0.5
+                                      opacity: 0.3 + (idx / data.length) * 0.5
                                     }}
                                     title={`${m.time}\n价格: ${m.price.toFixed(2)}\n成交量: ${m.volume}手`}
                                   />
@@ -390,12 +407,12 @@ function App() {
                         })()}
                       </div>
                       <div className="chart-labels">
-                        <span>{stock.minute_volume[0]?.time}</span>
+                        <span>{stock.minute_volume.data[0]?.time}</span>
                         <span className="chart-legend">
                           <span className="legend-volume">■ 成交量</span>
                           <span className="legend-price">— 价格</span>
                         </span>
-                        <span>{stock.minute_volume[stock.minute_volume.length - 1]?.time}</span>
+                        <span>{stock.minute_volume.data[stock.minute_volume.data.length - 1]?.time}</span>
                       </div>
                     </div>
                   )}
@@ -485,6 +502,18 @@ function App() {
                     </div>
                   </div>
                   
+                  {/* 数据时间信息 */}
+                  {stock.minute_volume && (
+                    <div className="data-time-info">
+                      <span className="time-icon">🕐</span>
+                      <span className="time-label">数据:</span>
+                      <span className="time-value">{stock.minute_volume.time_range}</span>
+                      {stock.minute_volume.is_after_close && (
+                        <span className="close-badge">已收盘</span>
+                      )}
+                    </div>
+                  )}
+                  
                   <div className="ai-price-row">
                     <span className="ai-price">{stock.price.toFixed(2)}</span>
                     <span className={`ai-change ${stock.change_percent >= 0 ? 'up' : 'down'}`}>
@@ -569,21 +598,25 @@ function App() {
                   )}
                   
                   {/* 30分钟成交量趋势图 */}
-                  {stock.minute_volume && stock.minute_volume.length > 0 && (
+                  {stock.minute_volume && stock.minute_volume.data && stock.minute_volume.data.length > 0 && (
                     <div className="volume-chart ai-chart">
                       <div className="chart-header">
-                        <span className="chart-title">📊 近30分钟行情</span>
+                        <span className="chart-title">📊 尾盘行情</span>
                         <span className="chart-time">
-                          {stock.minute_volume[0]?.time} - {stock.minute_volume[stock.minute_volume.length - 1]?.time}
+                          {stock.minute_volume.time_range}
+                          {stock.minute_volume.is_after_close && (
+                            <span className="fetch-time"> (已收盘)</span>
+                          )}
                         </span>
                       </div>
                       {/* 价格区间显示 */}
                       {(() => {
-                        const prices = stock.minute_volume.map(m => m.price);
+                        const data = stock.minute_volume.data;
+                        const prices = data.map(m => m.price);
                         const minPrice = Math.min(...prices);
                         const maxPrice = Math.max(...prices);
-                        const firstPrice = stock.minute_volume[0].price;
-                        const lastPrice = stock.minute_volume[stock.minute_volume.length - 1].price;
+                        const firstPrice = data[0].price;
+                        const lastPrice = data[data.length - 1].price;
                         const priceChange = lastPrice - firstPrice;
                         return (
                           <div className="price-summary">
@@ -599,14 +632,15 @@ function App() {
                       {/* 价格折线 + 成交量柱状图 */}
                       <div className="chart-wrapper">
                         {(() => {
-                          const prices = stock.minute_volume.map(m => m.price);
+                          const data = stock.minute_volume.data;
+                          const prices = data.map(m => m.price);
                           const minPrice = Math.min(...prices);
                           const maxPrice = Math.max(...prices);
                           const priceRange = maxPrice - minPrice || 1;
-                          const maxVolume = Math.max(...stock.minute_volume.map(m => m.volume));
+                          const maxVolume = Math.max(...data.map(m => m.volume));
                           
-                          const points = stock.minute_volume.map((m, idx) => {
-                            const x = (idx / (stock.minute_volume!.length - 1)) * 100;
+                          const points = data.map((m, idx) => {
+                            const x = (idx / (data.length - 1)) * 100;
                             const y = 100 - ((m.price - minPrice) / priceRange) * 100;
                             return `${x},${y}`;
                           }).join(' ');
@@ -614,15 +648,16 @@ function App() {
                           return (
                             <>
                               <div className="chart-container">
-                                {stock.minute_volume.map((m, idx) => (
+                                {data.map((m, idx) => (
                                   <div 
                                     key={idx} 
-                                    className={`volume-bar ${m.change >= 0 ? 'up' : 'down'}`}
+                                    className="volume-bar"
                                     style={{ 
                                       height: `${(m.volume / maxVolume) * 100}%`,
-                                      width: `${100 / stock.minute_volume!.length - 0.5}%`
+                                      width: `${100 / data.length - 0.5}%`,
+                                      opacity: 0.3 + (idx / data.length) * 0.5
                                     }}
-                                    title={`${m.time}\n价格: ${m.price.toFixed(2)}\n成交量: ${(m.volume/10000).toFixed(1)}万手`}
+                                    title={`${m.time}\n价格: ${m.price.toFixed(2)}\n成交量: ${m.volume}手`}
                                   />
                                 ))}
                                 <svg className="price-line-svg" viewBox="0 0 100 100" preserveAspectRatio="none">

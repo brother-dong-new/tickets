@@ -315,8 +315,28 @@ def get_stock_news(code: str, days: int = 3) -> List[Dict[str, Any]]:
     return news_list
 
 
-def get_minute_data(code: str, minutes: int = 30) -> List[Dict[str, Any]]:
-    """获取分时成交量数据（最近N分钟）"""
+def get_minute_data(code: str, minutes: int = 30) -> Dict[str, Any]:
+    """获取分时成交量数据
+    
+    A股交易时间：
+    - 上午：9:30 - 11:30
+    - 下午：13:00 - 15:00
+    
+    逻辑：
+    - 交易时间内：返回最近N分钟数据
+    - 收盘后（15:00之后）：返回尾盘数据（14:27-14:57）
+    
+    返回：包含数据和时间范围的字典
+    """
+    from datetime import datetime
+    
+    empty_result = {
+        'data': [],
+        'time_range': '',
+        'is_after_close': False,
+        'fetch_time': datetime.now().strftime('%H:%M:%S')
+    }
+    
     try:
         # 确定市场前缀
         if code.startswith('6') or code.startswith('9'):
@@ -335,6 +355,11 @@ def get_minute_data(code: str, minutes: int = 30) -> List[Dict[str, Any]]:
             if data.get('code') == 0 and data.get('data', {}).get(symbol, {}).get('data', {}).get('data'):
                 minute_data = data['data'][symbol]['data']['data']
                 
+                # 判断当前是否为收盘后
+                now = datetime.now()
+                current_time = now.hour * 100 + now.minute
+                is_after_close = current_time >= 1500  # 15:00之后
+                
                 # 解析分时数据
                 # 格式: "0930 11.03 5008 5523824.00"
                 # 时间 价格 累计成交量 累计成交额
@@ -345,6 +370,18 @@ def get_minute_data(code: str, minutes: int = 30) -> List[Dict[str, Any]]:
                     parts = item.split(' ')
                     if len(parts) >= 4:
                         time_str = parts[0]
+                        
+                        # A股交易时间：9:30-11:30, 13:00-15:00
+                        hour = int(time_str[:2])
+                        minute = int(time_str[2:])
+                        time_val = hour * 100 + minute
+                        
+                        # 只保留交易时间内的数据
+                        is_trading_time = (930 <= time_val <= 1130) or (1300 <= time_val <= 1500)
+                        
+                        if not is_trading_time:
+                            continue
+                        
                         price = float(parts[1])
                         cum_volume = int(parts[2])  # 累计成交量（手）
                         
@@ -356,16 +393,48 @@ def get_minute_data(code: str, minutes: int = 30) -> List[Dict[str, Any]]:
                             'time': f"{time_str[:2]}:{time_str[2:]}",
                             'price': price,
                             'volume': volume,  # 单分钟成交量（手）
-                            'cum_volume': cum_volume
+                            'cum_volume': cum_volume,
+                            'time_val': time_val  # 用于筛选
                         })
                 
-                # 只返回最近N分钟的数据
-                return parsed[-minutes:] if len(parsed) > minutes else parsed
+                # 收盘后：返回尾盘数据（14:27-14:57，避开收盘集合竞价）
+                if is_after_close:
+                    # 筛选14:27-14:57的数据（共30分钟）
+                    tail_data = [d for d in parsed if 1427 <= d['time_val'] <= 1457]
+                    # 移除time_val字段
+                    for d in tail_data:
+                        del d['time_val']
+                    
+                    time_range = "14:27 ~ 14:57" if tail_data else ""
+                    return {
+                        'data': tail_data,
+                        'time_range': time_range,
+                        'is_after_close': True,
+                        'fetch_time': now.strftime('%H:%M:%S')
+                    }
+                else:
+                    # 交易时间内：返回最近N分钟
+                    # 移除time_val字段
+                    for d in parsed:
+                        del d['time_val']
+                    result_data = parsed[-minutes:] if len(parsed) > minutes else parsed
+                    
+                    if result_data:
+                        time_range = f"{result_data[0]['time']} ~ {result_data[-1]['time']}"
+                    else:
+                        time_range = ""
+                    
+                    return {
+                        'data': result_data,
+                        'time_range': time_range,
+                        'is_after_close': False,
+                        'fetch_time': now.strftime('%H:%M:%S')
+                    }
         
-        return []
+        return empty_result
     except Exception as e:
         print(f"获取分时数据失败 {code}: {e}")
-        return []
+        return empty_result
 
 
 def check_negative_news(code: str, days: int = 3) -> Dict[str, Any]:
@@ -693,7 +762,8 @@ def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict]) -
         volume_ratio = stock.get('volume_ratio', 1)
         
         # 1. 获取分时数据分析尾盘走势
-        minute_data = get_minute_data(code, minutes=30)
+        minute_result = get_minute_data(code, minutes=30)
+        minute_data = minute_result.get('data', [])
         tail_trend = analyze_tail_trend(minute_data)
         
         # 2. 计算上涨空间
@@ -821,7 +891,7 @@ def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict]) -
                 'open_probability': open_probability
             },
             'negative_news': negative_info,
-            'minute_volume': minute_data,
+            'minute_volume': minute_result,
             'board_type': get_board_type(code)
         })
     
@@ -831,7 +901,7 @@ def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict]) -
     # 过滤掉评分过低的（短线要求更严格）
     qualified = [c for c in candidates if c['score'] >= 40]
     
-    return qualified[:5]
+    return qualified[:6]
 
 
 def get_board_type(code: str) -> Dict[str, Any]:
@@ -958,7 +1028,7 @@ async def screen_stocks(
     volume_ratio_max: float = Query(3.0, description="量比上限"),
     market_cap_min: float = Query(50, description="流通市值下限(亿)"),
     market_cap_max: float = Query(300, description="流通市值上限(亿)"),
-    limit: int = Query(20, description="返回数量")
+    limit: int = Query(30, description="返回数量")
 ):
     """筛选股票"""
     try:
@@ -1121,7 +1191,7 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                 # 检查利空消息
                 negative_info = check_negative_news(code, days=3)
                 # 获取最近30分钟成交量数据
-                minute_data = get_minute_data(code, minutes=30)
+                minute_result = get_minute_data(code, minutes=30)
                 
                 qualified_stocks.append({
                     "code": code,
@@ -1140,12 +1210,12 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                         "sector": "数字经济板块 ✓"
                     },
                     "negative_news": negative_info,
-                    "minute_volume": minute_data,
+                    "minute_volume": minute_result,
                     "board_type": get_board_type(code)
                 })
         
-        # 如果不足5只，降低条件
-        if len(qualified_stocks) < 5:
+        # 如果不足6只，降低条件
+        if len(qualified_stocks) < 6:
             for analysis in sorted(analysis_results, 
                                    key=lambda x: sum([x["has_volume_pattern"], 
                                                       x["above_ma5_high"], 
@@ -1159,7 +1229,7 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                         # 检查利空消息
                         negative_info = check_negative_news(analysis["code"], days=3)
                         # 获取最近30分钟成交量数据
-                        minute_data = get_minute_data(analysis["code"], minutes=30)
+                        minute_result = get_minute_data(analysis["code"], minutes=30)
                         
                         qualified_stocks.append({
                             "code": analysis["code"],
@@ -1176,11 +1246,11 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                                 "sector": "数字经济板块 ✓" if analysis["is_digital_economy"] else "非数字经济"
                             },
                             "negative_news": negative_info,
-                            "minute_volume": minute_data,
+                            "minute_volume": minute_result,
                             "board_type": get_board_type(analysis["code"])
                         })
                         
-                if len(qualified_stocks) >= 5:
+                if len(qualified_stocks) >= 6:
                     break
         
         # AI精选：从所有筛选出的股票中进行智能分析
@@ -1207,14 +1277,14 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
         market_env = get_market_environment()
         
         return {
-            "count": len(qualified_stocks[:5]),
+            "count": len(qualified_stocks[:6]),
             "total_analyzed": len(code_list),
             "filter_criteria": {
                 "volume_pattern": "阶梯式放量",
                 "price_position": "站稳5日线+近期高点",
                 "sector": "数字经济板块"
             },
-            "data": qualified_stocks[:5],
+            "data": qualified_stocks[:6],
             "all_analysis": analysis_results,
             "ai_selected": ai_selected,
             "market_environment": market_env
