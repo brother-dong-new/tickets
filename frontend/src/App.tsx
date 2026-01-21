@@ -17,6 +17,7 @@ function App() {
   const [aiSelectedStocks, setAiSelectedStocks] = useState<AISelectedStock[]>([]);
   const [marketEnv, setMarketEnv] = useState<MarketEnvironment | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [includeKcbCyb, setIncludeKcbCyb] = useState<boolean>(false); // 是否包含科创板/创业板
 
   // 筛选股票
   const handleScreen = async () => {
@@ -33,7 +34,8 @@ function App() {
         volume_ratio_max: 3,
         market_cap_min: 50,
         market_cap_max: 300,
-        limit: 30
+        limit: 30,
+        include_kcb_cyb: includeKcbCyb
       });
       setScreenedStocks(result.data);
       setState('screened');
@@ -52,7 +54,7 @@ function App() {
     
     try {
       const codes = screenedStocks.map(s => s.code);
-      const result = await filterStocks(codes);
+      const result = await filterStocks(codes, includeKcbCyb);
       setFilteredStocks(result.data);
       setAnalysisResults(result.all_analysis);
       setAiSelectedStocks(result.ai_selected || []);
@@ -119,6 +121,17 @@ function App() {
               <div className="criteria-item">
                 <span className="label">流通市值</span>
                 <span className="value">50 - 300亿</span>
+              </div>
+              <div className="criteria-item toggle-item">
+                <label className="toggle-label">
+                  <input 
+                    type="checkbox" 
+                    checked={includeKcbCyb}
+                    onChange={(e) => setIncludeKcbCyb(e.target.checked)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                  <span className="toggle-text">包含科创板/创业板</span>
+                </label>
               </div>
             </div>
             <button 

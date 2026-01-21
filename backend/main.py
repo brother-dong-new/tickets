@@ -735,7 +735,7 @@ def calculate_upside_space(current_price: float, pre_close: float, code: str) ->
     }
 
 
-def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict]) -> List[Dict]:
+def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict], include_kcb_cyb: bool = False) -> List[Dict]:
     """AI精选算法 - T+1短线优化版
     
     策略：收盘前20分钟买入，第二天卖出
@@ -749,6 +749,12 @@ def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict]) -
     
     for stock in screened_stocks:
         code = stock['code']
+        
+        # 如果不包含科创板/创业板，则跳过
+        if not include_kcb_cyb:
+            if code.startswith('688') or code.startswith('300') or code.startswith('301'):
+                continue
+        
         name = stock['name']
         
         reasons = []
@@ -1028,11 +1034,12 @@ async def screen_stocks(
     volume_ratio_max: float = Query(3.0, description="量比上限"),
     market_cap_min: float = Query(50, description="流通市值下限(亿)"),
     market_cap_max: float = Query(300, description="流通市值上限(亿)"),
-    limit: int = Query(30, description="返回数量")
+    limit: int = Query(30, description="返回数量"),
+    include_kcb_cyb: bool = Query(False, description="是否包含科创板/创业板")
 ):
     """筛选股票"""
     try:
-        print(f"开始筛选股票: 涨幅{change_min}%-{change_max}%, 量比{volume_ratio_min}-{volume_ratio_max}, 市值{market_cap_min}-{market_cap_max}亿")
+        print(f"开始筛选股票: 涨幅{change_min}%-{change_max}%, 量比{volume_ratio_min}-{volume_ratio_max}, 市值{market_cap_min}-{market_cap_max}亿, 包含科创板/创业板: {include_kcb_cyb}")
         
         # 获取所有股票数据
         all_stocks = get_all_stocks_data()
@@ -1044,6 +1051,13 @@ async def screen_stocks(
             # 排除ST股票
             if 'ST' in stock['name'] or 'st' in stock['name']:
                 continue
+            
+            # 如果不包含科创板/创业板，则排除
+            code = stock['code']
+            if not include_kcb_cyb:
+                # 科创板: 688xxx, 创业板: 300xxx, 301xxx
+                if code.startswith('688') or code.startswith('300') or code.startswith('301'):
+                    continue
             
             # 涨幅筛选
             if not (change_min <= stock['change_percent'] <= change_max):
@@ -1096,7 +1110,10 @@ async def screen_stocks(
 
 
 @app.get("/api/filter")
-async def filter_stocks(codes: str = Query(..., description="股票代码列表，用逗号分隔")):
+async def filter_stocks(
+    codes: str = Query(..., description="股票代码列表，用逗号分隔"),
+    include_kcb_cyb: bool = Query(False, description="是否包含科创板/创业板")
+):
     """过滤精选股票"""
     try:
         code_list = [c.strip() for c in codes.split(",") if c.strip()]
@@ -1127,6 +1144,11 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
         for code in code_list:
             if code not in stocks_map:
                 continue
+            
+            # 如果不包含科创板/创业板，则跳过
+            if not include_kcb_cyb:
+                if code.startswith('688') or code.startswith('300') or code.startswith('301'):
+                    continue
             
             stock = stocks_map[code]
             stock_name = stock['name']
@@ -1270,7 +1292,7 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                     'turnover': stock.get('turnover', 0),
                 })
         
-        ai_selected = ai_select_stocks(screened_for_ai, [])
+        ai_selected = ai_select_stocks(screened_for_ai, [], include_kcb_cyb)
         print(f"AI精选完成，选出 {len(ai_selected)} 只股票")
         
         # 获取大盘环境

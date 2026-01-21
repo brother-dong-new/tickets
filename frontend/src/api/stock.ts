@@ -212,6 +212,7 @@ export async function screenStocks(params?: {
   market_cap_min?: number;
   market_cap_max?: number;
   limit?: number;
+  include_kcb_cyb?: boolean;
 }): Promise<{
   count: number;
   criteria: {
@@ -226,7 +227,7 @@ export async function screenStocks(params?: {
 }
 
 // 过滤精选股票
-export async function filterStocks(codes: string[]): Promise<{
+export async function filterStocks(codes: string[], includeKcbCyb: boolean = false): Promise<{
   count: number;
   total_analyzed: number;
   filter_criteria: {
@@ -240,7 +241,7 @@ export async function filterStocks(codes: string[]): Promise<{
   market_environment: MarketEnvironment;
 }> {
   const response = await api.get('/filter', { 
-    params: { codes: codes.join(',') } 
+    params: { codes: codes.join(','), include_kcb_cyb: includeKcbCyb } 
   });
   return response.data;
 }
