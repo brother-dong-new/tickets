@@ -187,7 +187,7 @@ function App() {
             <span className="error-icon">⚠️</span>
             <span>{error}</span>
             <button onClick={() => setError(null)} className="close-btn">×</button>
-          </div>
+      </div>
         )}
 
         {/* 筛选结果 */}
@@ -202,7 +202,7 @@ function App() {
               {state !== 'idle' && (
                 <button className="reset-btn" onClick={handleReset}>
                   重新开始
-                </button>
+        </button>
               )}
             </div>
             
@@ -262,6 +262,15 @@ function App() {
                     <div className="stock-info">
                       <span className="stock-name">{stock.name}</span>
                       <span className="stock-code">{stock.code}</span>
+                      {stock.board_type && (
+                        <span 
+                          className="board-tag"
+                          style={{ backgroundColor: stock.board_type.color }}
+                          title={stock.board_type.risk_note}
+                        >
+                          {stock.board_type.name}
+                        </span>
+                      )}
                     </div>
                     <div className="stock-price">
                       <span className="price">{stock.price.toFixed(2)}</span>
@@ -458,6 +467,15 @@ function App() {
                     <div className="ai-stock-info">
                       <span className="ai-stock-name">{stock.name}</span>
                       <span className="ai-stock-code">{stock.code}</span>
+                      {stock.board_type && (
+                        <span 
+                          className="board-tag"
+                          style={{ backgroundColor: stock.board_type.color }}
+                          title={stock.board_type.risk_note}
+                        >
+                          {stock.board_type.name}
+                        </span>
+                      )}
                     </div>
                     <div className="ai-score">
                       <span className="score-label">AI评分</span>
@@ -547,6 +565,84 @@ function App() {
                       <span>{stock.negative_news.has_negative_news 
                         ? `${stock.negative_news.negative_count}条利空` 
                         : '无利空消息'}</span>
+                    </div>
+                  )}
+                  
+                  {/* 30分钟成交量趋势图 */}
+                  {stock.minute_volume && stock.minute_volume.length > 0 && (
+                    <div className="volume-chart ai-chart">
+                      <div className="chart-header">
+                        <span className="chart-title">📊 近30分钟行情</span>
+                        <span className="chart-time">
+                          {stock.minute_volume[0]?.time} - {stock.minute_volume[stock.minute_volume.length - 1]?.time}
+                        </span>
+                      </div>
+                      {/* 价格区间显示 */}
+                      {(() => {
+                        const prices = stock.minute_volume.map(m => m.price);
+                        const minPrice = Math.min(...prices);
+                        const maxPrice = Math.max(...prices);
+                        const firstPrice = stock.minute_volume[0].price;
+                        const lastPrice = stock.minute_volume[stock.minute_volume.length - 1].price;
+                        const priceChange = lastPrice - firstPrice;
+                        return (
+                          <div className="price-summary">
+                            <span className="price-range">
+                              价格区间: {minPrice.toFixed(2)} - {maxPrice.toFixed(2)}
+                            </span>
+                            <span className={`price-change ${priceChange >= 0 ? 'up' : 'down'}`}>
+                              {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                      {/* 价格折线 + 成交量柱状图 */}
+                      <div className="chart-wrapper">
+                        {(() => {
+                          const prices = stock.minute_volume.map(m => m.price);
+                          const minPrice = Math.min(...prices);
+                          const maxPrice = Math.max(...prices);
+                          const priceRange = maxPrice - minPrice || 1;
+                          const maxVolume = Math.max(...stock.minute_volume.map(m => m.volume));
+                          
+                          const points = stock.minute_volume.map((m, idx) => {
+                            const x = (idx / (stock.minute_volume!.length - 1)) * 100;
+                            const y = 100 - ((m.price - minPrice) / priceRange) * 100;
+                            return `${x},${y}`;
+                          }).join(' ');
+                          
+                          return (
+                            <>
+                              <div className="chart-container">
+                                {stock.minute_volume.map((m, idx) => (
+                                  <div 
+                                    key={idx} 
+                                    className={`volume-bar ${m.change >= 0 ? 'up' : 'down'}`}
+                                    style={{ 
+                                      height: `${(m.volume / maxVolume) * 100}%`,
+                                      width: `${100 / stock.minute_volume!.length - 0.5}%`
+                                    }}
+                                    title={`${m.time}\n价格: ${m.price.toFixed(2)}\n成交量: ${(m.volume/10000).toFixed(1)}万手`}
+                                  />
+                                ))}
+                                <svg className="price-line-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+                                  <polyline
+                                    points={points}
+                                    fill="none"
+                                    stroke="#ffd93d"
+                                    strokeWidth="2"
+                                    vectorEffect="non-scaling-stroke"
+                                  />
+                                </svg>
+                              </div>
+                              <div className="chart-legend">
+                                <span className="legend-volume">■ 成交量</span>
+                                <span className="legend-price">— 价格</span>
+      </div>
+                            </>
+                          );
+                        })()}
+                      </div>
                     </div>
                   )}
                 </div>

@@ -821,7 +821,8 @@ def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict]) -
                 'open_probability': open_probability
             },
             'negative_news': negative_info,
-            'minute_volume': minute_data
+            'minute_volume': minute_data,
+            'board_type': get_board_type(code)
         })
     
     # 按评分排序，取前3只
@@ -831,6 +832,48 @@ def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict]) -
     qualified = [c for c in candidates if c['score'] >= 40]
     
     return qualified[:5]
+
+
+def get_board_type(code: str) -> Dict[str, Any]:
+    """获取股票所属板块类型"""
+    # 提取纯数字代码
+    pure_code = code.replace('sh', '').replace('sz', '')
+    
+    if pure_code.startswith('688'):
+        return {
+            'type': 'kcb',
+            'name': '科创板',
+            'color': '#00b894',
+            'risk_note': '20%涨跌幅限制'
+        }
+    elif pure_code.startswith('300') or pure_code.startswith('301'):
+        return {
+            'type': 'cyb',
+            'name': '创业板',
+            'color': '#6c5ce7',
+            'risk_note': '20%涨跌幅限制'
+        }
+    elif pure_code.startswith('60'):
+        return {
+            'type': 'sh',
+            'name': '沪市主板',
+            'color': '#0984e3',
+            'risk_note': '10%涨跌幅限制'
+        }
+    elif pure_code.startswith('00'):
+        return {
+            'type': 'sz',
+            'name': '深市主板',
+            'color': '#00cec9',
+            'risk_note': '10%涨跌幅限制'
+        }
+    else:
+        return {
+            'type': 'other',
+            'name': '其他',
+            'color': '#636e72',
+            'risk_note': ''
+        }
 
 
 def is_digital_economy_stock(code: str, name: str = "") -> bool:
@@ -1097,7 +1140,8 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                         "sector": "数字经济板块 ✓"
                     },
                     "negative_news": negative_info,
-                    "minute_volume": minute_data
+                    "minute_volume": minute_data,
+                    "board_type": get_board_type(code)
                 })
         
         # 如果不足5只，降低条件
@@ -1132,7 +1176,8 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                                 "sector": "数字经济板块 ✓" if analysis["is_digital_economy"] else "非数字经济"
                             },
                             "negative_news": negative_info,
-                            "minute_volume": minute_data
+                            "minute_volume": minute_data,
+                            "board_type": get_board_type(analysis["code"])
                         })
                         
                 if len(qualified_stocks) >= 5:

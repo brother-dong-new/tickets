@@ -74,6 +74,14 @@ export interface CapitalFlow {
   flow_strength: string;
 }
 
+// 板块类型
+export interface BoardType {
+  type: 'kcb' | 'cyb' | 'sh' | 'sz' | 'other';
+  name: string;
+  color: string;
+  risk_note: string;
+}
+
 // 技术指标 (T+1短线版)
 export interface TechnicalIndicators {
   tail_trend: TailTrend;
@@ -97,6 +105,7 @@ export interface AISelectedStock {
   indicators: TechnicalIndicators;
   negative_news?: NegativeNewsInfo;
   minute_volume?: MinuteVolumeItem[];
+  board_type?: BoardType;
 }
 
 // 大盘环境
@@ -127,6 +136,7 @@ export interface FilteredStock {
   };
   negative_news?: NegativeNewsInfo;
   minute_volume?: MinuteVolumeItem[];
+  board_type?: BoardType;
 }
 
 // 分析结果
