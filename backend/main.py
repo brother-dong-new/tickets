@@ -403,6 +403,436 @@ def check_negative_news(code: str, days: int = 3) -> Dict[str, Any]:
     }
 
 
+# ===================== AI精选增强功能 =====================
+
+def get_market_environment() -> Dict[str, Any]:
+    """获取大盘环境"""
+    try:
+        # 获取上证指数数据
+        data = fetch_qq_stock_data(["sh000001"])
+        for line in data.strip().split('\n'):
+            match = re.match(r'v_(\w+)="(.*)";?', line.strip())
+            if match:
+                parts = match.group(2).split('~')
+                if len(parts) > 35:
+                    price = float(parts[3]) if parts[3] else 0
+                    change_percent = float(parts[32]) if parts[32] else 0
+                    
+                    # 获取上证指数K线判断是否在5日线上
+                    kline = fetch_qq_kline_data("000001", days=10)
+                    above_ma5 = False
+                    if kline:
+                        try:
+                            if 'data' in kline and 'sh000001' in kline['data']:
+                                qfqday = kline['data']['sh000001'].get('qfqday', [])
+                                if len(qfqday) >= 5:
+                                    closes = [float(d[2]) for d in qfqday[-5:]]
+                                    ma5 = sum(closes) / 5
+                                    above_ma5 = price > ma5
+                        except:
+                            pass
+                    
+                    return {
+                        'index_price': price,
+                        'index_change': change_percent,
+                        'above_ma5': above_ma5,
+                        'market_sentiment': 'bullish' if change_percent > 0.5 else ('bearish' if change_percent < -0.5 else 'neutral'),
+                        'safe_to_buy': change_percent > -1 and above_ma5
+                    }
+    except Exception as e:
+        print(f"获取大盘环境失败: {e}")
+    
+    return {
+        'index_price': 0,
+        'index_change': 0,
+        'above_ma5': False,
+        'market_sentiment': 'unknown',
+        'safe_to_buy': False
+    }
+
+
+def get_capital_flow(code: str) -> Dict[str, Any]:
+    """获取资金流向（东方财富）"""
+    try:
+        if code.startswith('6'):
+            secid = f"1.{code}"
+        else:
+            secid = f"0.{code}"
+        
+        url = f"https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?secid={secid}&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56&klt=1&lmt=1"
+        
+        cmd = [
+            'curl', '-s', '--connect-timeout', '10',
+            '-H', 'User-Agent: Mozilla/5.0',
+            '-H', 'Referer: https://quote.eastmoney.com/',
+            url
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        
+        if result.returncode == 0 and result.stdout:
+            data = json.loads(result.stdout)
+            if data.get('data') and data['data'].get('klines'):
+                # 解析最新的资金流向
+                latest = data['data']['klines'][-1]
+                parts = latest.split(',')
+                if len(parts) >= 6:
+                    main_inflow = float(parts[1]) / 100000000  # 转为亿
+                    return {
+                        'main_inflow': round(main_inflow, 2),
+                        'is_inflow': main_inflow > 0,
+                        'flow_strength': 'strong' if main_inflow > 0.5 else ('weak' if main_inflow > 0 else 'outflow')
+                    }
+    except Exception as e:
+        print(f"获取资金流向失败 {code}: {e}")
+    
+    return {'main_inflow': 0, 'is_inflow': False, 'flow_strength': 'unknown'}
+
+
+def calculate_rsi(closes: List[float], period: int = 14) -> float:
+    """计算RSI指标"""
+    if len(closes) < period + 1:
+        return 50
+    
+    gains = []
+    losses = []
+    
+    for i in range(1, len(closes)):
+        change = closes[i] - closes[i-1]
+        if change > 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
+    
+    if len(gains) < period:
+        return 50
+    
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    
+    if avg_loss == 0:
+        return 100
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    return round(rsi, 2)
+
+
+def calculate_macd(closes: List[float]) -> Dict[str, float]:
+    """计算MACD指标"""
+    if len(closes) < 26:
+        return {'macd': 0, 'signal': 0, 'histogram': 0, 'golden_cross': False}
+    
+    # EMA计算
+    def ema(data, period):
+        multiplier = 2 / (period + 1)
+        ema_values = [data[0]]
+        for i in range(1, len(data)):
+            ema_values.append((data[i] - ema_values[-1]) * multiplier + ema_values[-1])
+        return ema_values
+    
+    ema12 = ema(closes, 12)
+    ema26 = ema(closes, 26)
+    
+    dif = [ema12[i] - ema26[i] for i in range(len(closes))]
+    dea = ema(dif, 9)
+    macd = [(dif[i] - dea[i]) * 2 for i in range(len(closes))]
+    
+    # 判断金叉
+    golden_cross = False
+    if len(dif) >= 2 and len(dea) >= 2:
+        golden_cross = dif[-2] < dea[-2] and dif[-1] > dea[-1]
+    
+    return {
+        'macd': round(macd[-1], 4) if macd else 0,
+        'dif': round(dif[-1], 4) if dif else 0,
+        'dea': round(dea[-1], 4) if dea else 0,
+        'golden_cross': golden_cross
+    }
+
+
+def get_5day_change(kline_data: List[dict]) -> float:
+    """计算近5日涨幅"""
+    if len(kline_data) < 5:
+        return 0
+    
+    price_5days_ago = kline_data[-5]['close']
+    current_price = kline_data[-1]['close']
+    
+    if price_5days_ago > 0:
+        return round((current_price - price_5days_ago) / price_5days_ago * 100, 2)
+    return 0
+
+
+def check_touched_limit(code: str, current_price: float, pre_close: float) -> bool:
+    """检查今日是否触及涨停"""
+    if pre_close <= 0:
+        return False
+    
+    # ST股涨跌幅5%，其他10%（科创板/创业板20%）
+    if code.startswith('688') or code.startswith('300') or code.startswith('301'):
+        limit_rate = 0.20
+    else:
+        limit_rate = 0.10
+    
+    limit_price = pre_close * (1 + limit_rate)
+    # 如果当前价格接近涨停价（差距小于0.5%），认为触及过涨停
+    return current_price >= limit_price * 0.995
+
+
+def analyze_tail_trend(minute_data: List[Dict]) -> Dict[str, Any]:
+    """分析尾盘30分钟走势"""
+    if len(minute_data) < 10:
+        return {'trend': 'unknown', 'strength': 0, 'description': '数据不足'}
+    
+    # 取最后的数据
+    recent = minute_data[-10:]  # 最后10分钟
+    earlier = minute_data[:-10] if len(minute_data) > 10 else minute_data[:5]
+    
+    # 计算尾盘价格变化
+    if len(recent) >= 2 and len(earlier) >= 1:
+        tail_start_price = recent[0]['price']
+        tail_end_price = recent[-1]['price']
+        early_avg_price = sum(m['price'] for m in earlier) / len(earlier)
+        
+        tail_change = (tail_end_price - tail_start_price) / tail_start_price * 100 if tail_start_price > 0 else 0
+        
+        # 计算尾盘成交量占比
+        tail_volume = sum(m['volume'] for m in recent)
+        total_volume = sum(m['volume'] for m in minute_data)
+        tail_volume_ratio = tail_volume / total_volume * 100 if total_volume > 0 else 0
+        
+        # 判断趋势
+        if tail_change > 0.5 and tail_volume_ratio > 30:
+            return {
+                'trend': 'strong_up',
+                'strength': min(100, int(tail_change * 20 + tail_volume_ratio)),
+                'tail_change': round(tail_change, 2),
+                'tail_volume_ratio': round(tail_volume_ratio, 1),
+                'description': f'尾盘强势拉升{tail_change:.2f}%，成交量占比{tail_volume_ratio:.1f}%'
+            }
+        elif tail_change > 0.2:
+            return {
+                'trend': 'up',
+                'strength': min(80, int(tail_change * 15 + tail_volume_ratio * 0.5)),
+                'tail_change': round(tail_change, 2),
+                'tail_volume_ratio': round(tail_volume_ratio, 1),
+                'description': f'尾盘温和上涨{tail_change:.2f}%'
+            }
+        elif tail_change < -0.3:
+            return {
+                'trend': 'down',
+                'strength': -min(80, int(abs(tail_change) * 15)),
+                'tail_change': round(tail_change, 2),
+                'tail_volume_ratio': round(tail_volume_ratio, 1),
+                'description': f'尾盘回落{tail_change:.2f}%，需警惕'
+            }
+        else:
+            return {
+                'trend': 'stable',
+                'strength': 30,
+                'tail_change': round(tail_change, 2),
+                'tail_volume_ratio': round(tail_volume_ratio, 1),
+                'description': '尾盘走势平稳'
+            }
+    
+    return {'trend': 'unknown', 'strength': 0, 'description': '数据异常'}
+
+
+def calculate_upside_space(current_price: float, pre_close: float, code: str) -> Dict[str, Any]:
+    """计算上涨空间（距离涨停）"""
+    if pre_close <= 0:
+        return {'space': 0, 'limit_price': 0, 'near_limit': False}
+    
+    # 判断涨跌幅限制
+    if code.startswith('688') or code.startswith('300') or code.startswith('301'):
+        limit_rate = 0.20  # 科创板/创业板 20%
+    else:
+        limit_rate = 0.10  # 主板 10%
+    
+    limit_price = round(pre_close * (1 + limit_rate), 2)
+    current_change = (current_price - pre_close) / pre_close * 100
+    remaining_space = limit_rate * 100 - current_change
+    
+    return {
+        'space': round(remaining_space, 2),
+        'limit_price': limit_price,
+        'current_change': round(current_change, 2),
+        'near_limit': remaining_space < 2,  # 距离涨停不足2%
+        'limit_rate': limit_rate * 100
+    }
+
+
+def ai_select_stocks(screened_stocks: List[Dict], all_stocks_data: List[Dict]) -> List[Dict]:
+    """AI精选算法 - T+1短线优化版
+    
+    策略：收盘前20分钟买入，第二天卖出
+    重点关注：尾盘走势、资金抢筹、上涨空间、明日高开概率
+    """
+    
+    # 获取大盘环境
+    market_env = get_market_environment()
+    
+    candidates = []
+    
+    for stock in screened_stocks:
+        code = stock['code']
+        name = stock['name']
+        
+        reasons = []
+        score = 0
+        warnings = []
+        
+        current_price = stock['price']
+        pre_close = stock.get('pre_close', 0)
+        change_percent = stock['change_percent']
+        turnover = stock.get('turnover', 0)
+        volume_ratio = stock.get('volume_ratio', 1)
+        
+        # 1. 获取分时数据分析尾盘走势
+        minute_data = get_minute_data(code, minutes=30)
+        tail_trend = analyze_tail_trend(minute_data)
+        
+        # 2. 计算上涨空间
+        upside = calculate_upside_space(current_price, pre_close, code)
+        
+        # 3. 获取资金流向
+        capital_flow = get_capital_flow(code)
+        
+        # 4. 检查利空消息
+        negative_info = check_negative_news(code, days=3)
+        
+        # ===== T+1短线评分逻辑 =====
+        
+        # 【核心】尾盘走势评分 (权重最高)
+        if tail_trend['trend'] == 'strong_up':
+            score += 30
+            reasons.append(f"🚀 {tail_trend['description']}")
+        elif tail_trend['trend'] == 'up':
+            score += 20
+            reasons.append(f"📈 {tail_trend['description']}")
+        elif tail_trend['trend'] == 'stable':
+            score += 10
+            reasons.append(tail_trend['description'])
+        elif tail_trend['trend'] == 'down':
+            score -= 20
+            warnings.append(f"📉 {tail_trend['description']}")
+        
+        # 【核心】上涨空间评分
+        if upside['space'] >= 5:
+            score += 25
+            reasons.append(f"距涨停还有{upside['space']}%空间，明日上涨潜力大")
+        elif upside['space'] >= 3:
+            score += 15
+            reasons.append(f"距涨停{upside['space']}%，仍有上涨空间")
+        elif upside['near_limit']:
+            score -= 15
+            warnings.append(f"距涨停仅{upside['space']}%，追高风险大")
+        
+        # 【核心】资金流向评分
+        if capital_flow['is_inflow']:
+            if capital_flow['main_inflow'] > 1:
+                score += 30
+                reasons.append(f"💰 主力大幅净流入{capital_flow['main_inflow']}亿，资金抢筹明显")
+            elif capital_flow['main_inflow'] > 0.3:
+                score += 20
+                reasons.append(f"主力净流入{capital_flow['main_inflow']}亿，资金看好")
+            else:
+                score += 10
+                reasons.append(f"主力小幅净流入{capital_flow['main_inflow']}亿")
+        else:
+            if capital_flow['main_inflow'] < -0.5:
+                score -= 25
+                warnings.append(f"⚠️ 主力大幅净流出{abs(capital_flow['main_inflow'])}亿，可能出货")
+            else:
+                score -= 10
+                warnings.append(f"主力净流出{abs(capital_flow['main_inflow'])}亿")
+        
+        # 换手率评分 (短线需要活跃但不能太高)
+        if 5 <= turnover <= 12:
+            score += 15
+            reasons.append(f"换手率{turnover}%，交投活跃适中")
+        elif 3 <= turnover < 5:
+            score += 5
+            reasons.append(f"换手率{turnover}%，交投尚可")
+        elif turnover > 20:
+            score -= 20
+            warnings.append(f"换手率{turnover}%过高，可能主力出货")
+        elif turnover > 15:
+            score -= 10
+            warnings.append(f"换手率{turnover}%偏高")
+        
+        # 量比评分
+        if 1.5 <= volume_ratio <= 3:
+            score += 10
+            reasons.append(f"量比{volume_ratio:.1f}，温和放量")
+        elif volume_ratio > 5:
+            score -= 5
+            warnings.append(f"量比{volume_ratio:.1f}过大，可能异常波动")
+        
+        # 当日涨幅评分 (T+1短线，涨幅3-5%是较好位置)
+        if 3 <= change_percent <= 5:
+            score += 15
+            reasons.append(f"当日涨幅{change_percent}%，处于拉升初期")
+        elif 5 < change_percent <= 7:
+            score += 5
+            reasons.append(f"当日涨幅{change_percent}%，涨幅适中")
+        elif change_percent > 8:
+            score -= 10
+            warnings.append(f"当日涨幅{change_percent}%，追高风险增加")
+        
+        # 利空消息评分
+        if not negative_info['has_negative_news']:
+            score += 10
+            reasons.append("无近期利空消息")
+        else:
+            score -= negative_info['negative_count'] * 15
+            warnings.append(f"⚠️ 发现{negative_info['negative_count']}条利空消息，明日可能低开")
+        
+        # 大盘环境
+        if market_env['market_sentiment'] == 'bullish':
+            score += 10
+            reasons.append("大盘强势，有利于个股表现")
+        elif market_env['index_change'] < -1:
+            score -= 15
+            warnings.append("大盘下跌，明日系统性风险")
+        
+        # 明日高开概率预判
+        open_probability = 'high' if score >= 60 else ('medium' if score >= 40 else 'low')
+        
+        candidates.append({
+            'code': code,
+            'name': name,
+            'price': current_price,
+            'change_percent': change_percent,
+            'volume_ratio': volume_ratio,
+            'market_cap': stock['market_cap'],
+            'turnover': turnover,
+            'score': score,
+            'reasons': reasons,
+            'warnings': warnings,
+            'indicators': {
+                'tail_trend': tail_trend,
+                'upside_space': upside,
+                'capital_flow': capital_flow,
+                'open_probability': open_probability
+            },
+            'negative_news': negative_info,
+            'minute_volume': minute_data
+        })
+    
+    # 按评分排序，取前3只
+    candidates.sort(key=lambda x: x['score'], reverse=True)
+    
+    # 过滤掉评分过低的（短线要求更严格）
+    qualified = [c for c in candidates if c['score'] >= 40]
+    
+    return qualified[:5]
+
+
 def is_digital_economy_stock(code: str, name: str = "") -> bool:
     """判断是否属于数字经济板块"""
     # 科创板(688)和创业板(300)中的科技股更可能属于数字经济
@@ -670,8 +1100,8 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                     "minute_volume": minute_data
                 })
         
-        # 如果不足3只，降低条件
-        if len(qualified_stocks) < 3:
+        # 如果不足5只，降低条件
+        if len(qualified_stocks) < 5:
             for analysis in sorted(analysis_results, 
                                    key=lambda x: sum([x["has_volume_pattern"], 
                                                       x["above_ma5_high"], 
@@ -705,19 +1135,44 @@ async def filter_stocks(codes: str = Query(..., description="股票代码列表�
                             "minute_volume": minute_data
                         })
                         
-                if len(qualified_stocks) >= 3:
+                if len(qualified_stocks) >= 5:
                     break
         
+        # AI精选：从所有筛选出的股票中进行智能分析
+        print("开始AI精选分析...")
+        screened_for_ai = []
+        for code in code_list:
+            if code in stocks_map:
+                stock = stocks_map[code]
+                screened_for_ai.append({
+                    'code': code,
+                    'name': stock['name'],
+                    'price': stock['price'],
+                    'pre_close': stock.get('pre_close', 0),
+                    'change_percent': stock['change_percent'],
+                    'volume_ratio': stock['volume_ratio'],
+                    'market_cap': stock['market_cap'],
+                    'turnover': stock.get('turnover', 0),
+                })
+        
+        ai_selected = ai_select_stocks(screened_for_ai, [])
+        print(f"AI精选完成，选出 {len(ai_selected)} 只股票")
+        
+        # 获取大盘环境
+        market_env = get_market_environment()
+        
         return {
-            "count": len(qualified_stocks[:3]),
+            "count": len(qualified_stocks[:5]),
             "total_analyzed": len(code_list),
             "filter_criteria": {
                 "volume_pattern": "阶梯式放量",
                 "price_position": "站稳5日线+近期高点",
                 "sector": "数字经济板块"
             },
-            "data": qualified_stocks[:3],
-            "all_analysis": analysis_results
+            "data": qualified_stocks[:5],
+            "all_analysis": analysis_results,
+            "ai_selected": ai_selected,
+            "market_environment": market_env
         }
     except HTTPException:
         raise

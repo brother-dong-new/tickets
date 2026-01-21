@@ -4,7 +4,7 @@
  */
 import { useState } from 'react';
 import { screenStocks, filterStocks } from './api/stock';
-import type { ScreenedStock, FilteredStock, AnalysisResult } from './api/stock';
+import type { ScreenedStock, FilteredStock, AnalysisResult, AISelectedStock, MarketEnvironment } from './api/stock';
 import './App.css';
 
 type AppState = 'idle' | 'screening' | 'screened' | 'filtering' | 'filtered';
@@ -14,6 +14,8 @@ function App() {
   const [screenedStocks, setScreenedStocks] = useState<ScreenedStock[]>([]);
   const [filteredStocks, setFilteredStocks] = useState<FilteredStock[]>([]);
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult[]>([]);
+  const [aiSelectedStocks, setAiSelectedStocks] = useState<AISelectedStock[]>([]);
+  const [marketEnv, setMarketEnv] = useState<MarketEnvironment | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 筛选股票
@@ -53,6 +55,8 @@ function App() {
       const result = await filterStocks(codes);
       setFilteredStocks(result.data);
       setAnalysisResults(result.all_analysis);
+      setAiSelectedStocks(result.ai_selected || []);
+      setMarketEnv(result.market_environment || null);
       setState('filtered');
     } catch (err: any) {
       setError(err.response?.data?.detail || '过滤失败，请稍后重试');
@@ -66,6 +70,8 @@ function App() {
     setScreenedStocks([]);
     setFilteredStocks([]);
     setAnalysisResults([]);
+    setAiSelectedStocks([]);
+    setMarketEnv(null);
     setError(null);
   };
 
@@ -412,6 +418,135 @@ function App() {
                           ))}
                         </div>
                       )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* AI精选股票 */}
+        {aiSelectedStocks.length > 0 && (
+          <section className="results-section ai-featured">
+            <div className="section-header">
+              <h2>
+                <span className="section-icon">🤖</span>
+                AI智能精选
+                <span className="count-badge ai">{aiSelectedStocks.length}只</span>
+              </h2>
+              {marketEnv && (
+                <div className={`market-status ${marketEnv.safe_to_buy ? 'safe' : 'caution'}`}>
+                  <span className="market-icon">{marketEnv.safe_to_buy ? '🟢' : '🟡'}</span>
+                  <span>上证 {marketEnv.index_change >= 0 ? '+' : ''}{marketEnv.index_change.toFixed(2)}%</span>
+                  <span className="market-tag">
+                    {marketEnv.market_sentiment === 'bullish' ? '多头市场' : 
+                     marketEnv.market_sentiment === 'bearish' ? '空头市场' : '震荡市场'}
+                  </span>
+                </div>
+              )}
+            </div>
+            
+            <div className="ai-grid">
+              {aiSelectedStocks.map((stock, index) => (
+                <div key={stock.code} className="ai-card">
+                  <div className="ai-card-header">
+                    <div className="ai-rank">
+                      <span className="rank-icon">🏅</span>
+                      <span className="rank-num">#{index + 1}</span>
+                    </div>
+                    <div className="ai-stock-info">
+                      <span className="ai-stock-name">{stock.name}</span>
+                      <span className="ai-stock-code">{stock.code}</span>
+                    </div>
+                    <div className="ai-score">
+                      <span className="score-label">AI评分</span>
+                      <span className={`score-value ${stock.score >= 60 ? 'high' : stock.score >= 40 ? 'medium' : 'low'}`}>
+                        {stock.score}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <div className="ai-price-row">
+                    <span className="ai-price">{stock.price.toFixed(2)}</span>
+                    <span className={`ai-change ${stock.change_percent >= 0 ? 'up' : 'down'}`}>
+                      {stock.change_percent >= 0 ? '+' : ''}{stock.change_percent.toFixed(2)}%
+                    </span>
+                  </div>
+                  
+                  {/* T+1短线核心指标 */}
+                  <div className="ai-indicators">
+                    <div className="indicator wide">
+                      <span className="ind-label">尾盘走势</span>
+                      <span className={`ind-value ${
+                        stock.indicators.tail_trend.trend === 'strong_up' ? 'good' : 
+                        stock.indicators.tail_trend.trend === 'up' ? 'good' : 
+                        stock.indicators.tail_trend.trend === 'down' ? 'warn' : ''
+                      }`}>
+                        {stock.indicators.tail_trend.trend === 'strong_up' ? '🚀 强势拉升' :
+                         stock.indicators.tail_trend.trend === 'up' ? '📈 温和上涨' :
+                         stock.indicators.tail_trend.trend === 'down' ? '📉 回落' :
+                         stock.indicators.tail_trend.trend === 'stable' ? '➡️ 平稳' : '—'}
+                      </span>
+                    </div>
+                    <div className="indicator wide">
+                      <span className="ind-label">距涨停空间</span>
+                      <span className={`ind-value ${
+                        stock.indicators.upside_space.space >= 5 ? 'good' : 
+                        stock.indicators.upside_space.near_limit ? 'warn' : ''
+                      }`}>
+                        {stock.indicators.upside_space.space.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="indicator">
+                      <span className="ind-label">主力资金</span>
+                      <span className={`ind-value ${stock.indicators.capital_flow.is_inflow ? 'good' : 'warn'}`}>
+                        {stock.indicators.capital_flow.is_inflow ? '+' : ''}{stock.indicators.capital_flow.main_inflow}亿
+                      </span>
+                    </div>
+                    <div className="indicator">
+                      <span className="ind-label">明日预判</span>
+                      <span className={`ind-value ${
+                        stock.indicators.open_probability === 'high' ? 'good' : 
+                        stock.indicators.open_probability === 'low' ? 'warn' : ''
+                      }`}>
+                        {stock.indicators.open_probability === 'high' ? '🟢 高开' :
+                         stock.indicators.open_probability === 'medium' ? '🟡 平开' : '🔴 低开'}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {/* 选股理由 */}
+                  {stock.reasons.length > 0 && (
+                    <div className="ai-reasons">
+                      <div className="reasons-title">✅ 选股理由</div>
+                      <ul className="reasons-list">
+                        {stock.reasons.map((reason, idx) => (
+                          <li key={idx}>{reason}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  
+                  {/* 风险提示 */}
+                  {stock.warnings.length > 0 && (
+                    <div className="ai-warnings">
+                      <div className="warnings-title">⚠️ 风险提示</div>
+                      <ul className="warnings-list">
+                        {stock.warnings.map((warning, idx) => (
+                          <li key={idx}>{warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  
+                  {/* 利空消息 */}
+                  {stock.negative_news && (
+                    <div className={`ai-news-alert ${stock.negative_news.risk_level}`}>
+                      <span className="news-icon">{stock.negative_news.has_negative_news ? '⚠️' : '✅'}</span>
+                      <span>{stock.negative_news.has_negative_news 
+                        ? `${stock.negative_news.negative_count}条利空` 
+                        : '无利空消息'}</span>
                     </div>
                   )}
                 </div>

@@ -49,6 +49,65 @@ export interface MinuteVolumeItem {
   cum_volume: number;
 }
 
+// 尾盘走势分析
+export interface TailTrend {
+  trend: 'strong_up' | 'up' | 'stable' | 'down' | 'unknown';
+  strength: number;
+  tail_change?: number;
+  tail_volume_ratio?: number;
+  description: string;
+}
+
+// 上涨空间
+export interface UpsideSpace {
+  space: number;
+  limit_price: number;
+  current_change: number;
+  near_limit: boolean;
+  limit_rate: number;
+}
+
+// 资金流向
+export interface CapitalFlow {
+  main_inflow: number;
+  is_inflow: boolean;
+  flow_strength: string;
+}
+
+// 技术指标 (T+1短线版)
+export interface TechnicalIndicators {
+  tail_trend: TailTrend;
+  upside_space: UpsideSpace;
+  capital_flow: CapitalFlow;
+  open_probability: 'high' | 'medium' | 'low';
+}
+
+// AI精选股票
+export interface AISelectedStock {
+  code: string;
+  name: string;
+  price: number;
+  change_percent: number;
+  volume_ratio: number;
+  market_cap: number;
+  turnover: number;
+  score: number;
+  reasons: string[];
+  warnings: string[];
+  indicators: TechnicalIndicators;
+  negative_news?: NegativeNewsInfo;
+  minute_volume?: MinuteVolumeItem[];
+}
+
+// 大盘环境
+export interface MarketEnvironment {
+  index_price: number;
+  index_change: number;
+  above_ma5: boolean;
+  market_sentiment: 'bullish' | 'bearish' | 'neutral' | 'unknown';
+  safe_to_buy: boolean;
+}
+
 // 过滤后的精选股票信息
 export interface FilteredStock {
   code: string;
@@ -159,6 +218,8 @@ export async function filterStocks(codes: string[]): Promise<{
   };
   data: FilteredStock[];
   all_analysis: AnalysisResult[];
+  ai_selected: AISelectedStock[];
+  market_environment: MarketEnvironment;
 }> {
   const response = await api.get('/filter', { 
     params: { codes: codes.join(',') } 
