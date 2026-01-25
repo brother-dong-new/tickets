@@ -2,7 +2,7 @@
  * K线图组件
  */
 import ReactECharts from 'echarts-for-react';
-import { KLineItem } from '../api/stock';
+import type { KLineItem } from '../api/stock';
 
 interface KLineChartProps {
   data: KLineItem[];
@@ -157,6 +157,19 @@ export default function KLineChart({ data, title }: KLineChartProps) {
           value: v,
           itemStyle: { color: colors[i] },
         })),
+        label: {
+          show: true,
+          position: 'top',
+          formatter: (params: any) => {
+            const value = params.value;
+            if (value >= 10000) {
+              return `${(value / 10000).toFixed(1)}W`;
+            }
+            return value.toFixed(0);
+          },
+          color: '#94a3b8',
+          fontSize: 10,
+        },
       },
     ],
   };

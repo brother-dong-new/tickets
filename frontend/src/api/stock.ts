@@ -7,8 +7,13 @@ const API_BASE = 'http://localhost:8000/api';
 
 const api = axios.create({
   baseURL: API_BASE,
-  timeout: 60000,
+  timeout: 180000, // 增加到180秒，处理复杂分析
 });
+
+// 创建可取消的请求控制器
+export const createCancelToken = () => {
+  return axios.CancelToken.source();
+};
 
 // 筛选后的股票信息
 export interface ScreenedStock {
@@ -22,6 +27,7 @@ export interface ScreenedStock {
   market_cap: number;
   amount: number;
   volume: number;
+   main_inflow?: number;
 }
 
 // 利空消息详情
@@ -118,11 +124,69 @@ export interface AISelectedStock {
 
 // 大盘环境
 export interface MarketEnvironment {
+  index_code?: string;  // 新增：指数代码
+  index_name?: string;  // 新增：指数名称
   index_price: number;
   index_change: number;
   above_ma5: boolean;
   market_sentiment: 'bullish' | 'bearish' | 'neutral' | 'unknown';
   safe_to_buy: boolean;
+}
+
+// 开盘策略
+export interface OpenStrategy {
+  high_open_threshold: number;
+  high_open_action: string;
+  low_open_threshold: number;
+  low_open_action: string;
+  flat_open_action: string;
+}
+
+// 交易计划
+export interface TradePlan {
+  entry_price: number;
+  entry_time: string;
+  stop_loss_price: number;
+  stop_loss_ratio: number;
+  take_profit_price: number;
+  take_profit_ratio: number;
+  expected_return: number;
+  hold_period: string;
+  risk_reward_ratio: number;
+  open_strategy?: OpenStrategy;  // 新增：开盘策略
+}
+
+// 最终单只精选股票
+export interface FinalPick {
+  rank?: number;  // 新增：排名（1/2/3）
+  code: string;
+  name: string;
+  price: number;
+  change_percent: number;
+  volume_ratio: number;
+  market_cap: number;
+  turnover?: number;
+  score?: number;
+  open_probability?: 'high' | 'medium' | 'low';
+  summary: string;
+  reasons: string[];
+  warnings: string[];
+  tail_trend?: TailTrend;
+  upside_space?: UpsideSpace;
+  capital_flow?: CapitalFlow;
+  negative_risk?: {
+    has_negative_news: boolean;
+    risk_level: 'low' | 'medium' | 'high';
+    negative_count: number;
+  };
+  board_type?: BoardType;
+  market_environment?: MarketEnvironment;
+  trade_plan?: TradePlan;
+  operation_tips?: string[];
+  source?: 'ai' | 'technical';  // 新增：来源标识
+  source_label?: string;  // 新增：来源显示文本
+  concepts?: string[];  // 新增：概念标签
+  is_hot_industry?: boolean;  // 新增：是否属于主力抢筹热门行业
 }
 
 // 过滤后的精选股票信息
@@ -145,6 +209,10 @@ export interface FilteredStock {
   negative_news?: NegativeNewsInfo;
   minute_volume?: MinuteVolumeResult;
   board_type?: BoardType;
+  source?: 'ai' | 'technical';  // 新增：来源标识
+  source_label?: string;  // 新增：来源显示文本
+  concepts?: string[];  // 新增：概念标签
+  is_hot_industry?: boolean;  // 新增：是否属于主力抢筹热门行业
 }
 
 // 分析结果
@@ -213,6 +281,7 @@ export async function screenStocks(params?: {
   market_cap_max?: number;
   limit?: number;
   include_kcb_cyb?: boolean;
+  prefer_tail_inflow?: boolean;
 }): Promise<{
   count: number;
   criteria: {
@@ -227,7 +296,13 @@ export async function screenStocks(params?: {
 }
 
 // 过滤精选股票
-export async function filterStocks(codes: string[], includeKcbCyb: boolean = false): Promise<{
+export async function filterStocks(
+  codes: string[],
+  includeKcbCyb: boolean = false,
+  preferTailInflow: boolean = false,
+  strictRiskControl: boolean = true,
+  cancelToken?: any,
+): Promise<{
   count: number;
   total_analyzed: number;
   filter_criteria: {
@@ -239,9 +314,17 @@ export async function filterStocks(codes: string[], includeKcbCyb: boolean = fal
   all_analysis: AnalysisResult[];
   ai_selected: AISelectedStock[];
   market_environment: MarketEnvironment;
+  final_pick?: FinalPick | null;
+  final_picks?: FinalPick[];  // 新增：Top3候选列表
 }> {
   const response = await api.get('/filter', { 
-    params: { codes: codes.join(','), include_kcb_cyb: includeKcbCyb } 
+    params: { 
+      codes: codes.join(','),
+      include_kcb_cyb: includeKcbCyb,
+      prefer_tail_inflow: preferTailInflow,
+      strict_risk_control: strictRiskControl,
+    },
+    cancelToken,
   });
   return response.data;
 }

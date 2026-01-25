@@ -2,9 +2,11 @@
  * 股票筛选器
  * 实现股票筛选和精选过滤功能
  */
-import { useState } from 'react';
-import { screenStocks, filterStocks } from './api/stock';
-import type { ScreenedStock, FilteredStock, AnalysisResult, AISelectedStock, MarketEnvironment } from './api/stock';
+import { useState, useRef } from 'react';
+import { screenStocks, filterStocks, createCancelToken } from './api/stock';
+import type { ScreenedStock, FilteredStock, AnalysisResult, AISelectedStock, MarketEnvironment, FinalPick } from './api/stock';
+import AIRadar from './components/AIRadar';
+import FinalPickCard from './components/FinalPickCard';
 import './App.css';
 
 type AppState = 'idle' | 'screening' | 'screened' | 'filtering' | 'filtered';
@@ -17,7 +19,26 @@ function App() {
   const [aiSelectedStocks, setAiSelectedStocks] = useState<AISelectedStock[]>([]);
   const [marketEnv, setMarketEnv] = useState<MarketEnvironment | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [finalPick, setFinalPick] = useState<FinalPick | null>(null);
+  const [finalPicks, setFinalPicks] = useState<FinalPick[]>([]);  // 新增：Top3候选
+  const [selectedPickIndex, setSelectedPickIndex] = useState<number>(0);  // 新增：当前选中的候选
+  const [showFinalPick, setShowFinalPick] = useState<boolean>(false);
   const [includeKcbCyb, setIncludeKcbCyb] = useState<boolean>(false); // 是否包含科创板/创业板
+  const [preferTailInflow, setPreferTailInflow] = useState<boolean>(true); // 是否优先尾盘大资金流入（默认勾选）
+  const [strictRiskControl, setStrictRiskControl] = useState<boolean>(true); // 是否启用阶段涨幅+集中度限制（默认勾选）
+  const [filterProgress, setFilterProgress] = useState<string>(''); // 新增：过滤进度提示
+  const [isScreenedCollapsed, setIsScreenedCollapsed] = useState<boolean>(false); // 新增：初步筛选结果是否折叠
+  
+  // 取消请求的控制器
+  const cancelTokenSource = useRef<any>(null);
+  
+  // 可调筛选参数（默认值与后端一致）
+  const [changeMin, setChangeMin] = useState<number>(3);
+  const [changeMax, setChangeMax] = useState<number>(6);
+  const [volumeRatioMin, setVolumeRatioMin] = useState<number>(1.5);
+  const [volumeRatioMax, setVolumeRatioMax] = useState<number>(3);
+  const [marketCapMin, setMarketCapMin] = useState<number>(50);
+  const [marketCapMax, setMarketCapMax] = useState<number>(350);
 
   // 筛选股票
   const handleScreen = async () => {
@@ -28,14 +49,15 @@ function App() {
     
     try {
       const result = await screenStocks({
-        change_min: 3,
-        change_max: 5,
-        volume_ratio_min: 1.5,
-        volume_ratio_max: 3,
-        market_cap_min: 50,
-        market_cap_max: 300,
+        change_min: changeMin,
+        change_max: changeMax,
+        volume_ratio_min: volumeRatioMin,
+        volume_ratio_max: volumeRatioMax,
+        market_cap_min: marketCapMin,
+        market_cap_max: marketCapMax,
         limit: 30,
-        include_kcb_cyb: includeKcbCyb
+        include_kcb_cyb: includeKcbCyb,
+        prefer_tail_inflow: preferTailInflow,
       });
       setScreenedStocks(result.data);
       setState('screened');
@@ -51,17 +73,70 @@ function App() {
     
     setState('filtering');
     setError(null);
+    setFilterProgress('正在初始化分析...');
+    
+    // 创建取消令牌
+    cancelTokenSource.current = createCancelToken();
+    
+    // 模拟进度更新
+    const progressTimer = setInterval(() => {
+      setFilterProgress(prev => {
+        const tips = [
+          '正在获取实时行情数据...',
+          '正在分析K线走势...',
+          '正在计算资金流向...',
+          '正在检测技术指标...',
+          '正在评估风险因素...',
+          '正在进行AI综合评分...',
+          '正在生成交易计划...',
+          '即将完成分析...',
+        ];
+        const currentIndex = tips.indexOf(prev);
+        return currentIndex < tips.length - 1 ? tips[currentIndex + 1] : tips[tips.length - 1];
+      });
+    }, 8000); // 每8秒更新一次提示
     
     try {
       const codes = screenedStocks.map(s => s.code);
-      const result = await filterStocks(codes, includeKcbCyb);
+      const result = await filterStocks(
+        codes, 
+        includeKcbCyb, 
+        preferTailInflow, 
+        strictRiskControl,
+        cancelTokenSource.current.token
+      );
+      
+      clearInterval(progressTimer);
+      setFilterProgress('');
+      
       setFilteredStocks(result.data);
       setAnalysisResults(result.all_analysis);
       setAiSelectedStocks(result.ai_selected || []);
       setMarketEnv(result.market_environment || null);
+      setFinalPick(result.final_pick || null);
+      setFinalPicks(result.final_picks || []);  // 新增：获取Top3候选
+      setSelectedPickIndex(0);  // 新增：默认选中第一个
+      setShowFinalPick(false);
+      setIsScreenedCollapsed(true);  // 新增：精选完成后折叠初步筛选结果
       setState('filtered');
     } catch (err: any) {
-      setError(err.response?.data?.detail || '过滤失败，请稍后重试');
+      clearInterval(progressTimer);
+      setFilterProgress('');
+      
+      if (err.message === 'Cancel') {
+        setError('分析已取消');
+      } else {
+        setError(err.response?.data?.detail || '过滤失败，请稍后重试。提示：如果股票数量较多，分析可能需要1-3分钟');
+      }
+      setState('screened');
+    }
+  };
+
+  // 取消过滤
+  const handleCancelFilter = () => {
+    if (cancelTokenSource.current) {
+      cancelTokenSource.current.cancel('Cancel');
+      setFilterProgress('');
       setState('screened');
     }
   };
@@ -75,6 +150,11 @@ function App() {
     setAiSelectedStocks([]);
     setMarketEnv(null);
     setError(null);
+    setFinalPick(null);
+    setFinalPicks([]);  // 新增：重置Top3候选
+    setSelectedPickIndex(0);  // 新增：重置选中索引
+    setShowFinalPick(false);
+    setIsScreenedCollapsed(false);  // 新增：重置时展开初步筛选结果
   };
 
   // 格式化金额
@@ -112,15 +192,67 @@ function App() {
             <div className="criteria-list">
               <div className="criteria-item">
                 <span className="label">涨幅范围</span>
-                <span className="value">3% - 5%</span>
+                <span className="value">
+                  <input
+                    type="number"
+                    className="criteria-input"
+                    value={changeMin}
+                    onChange={(e) => setChangeMin(Number(e.target.value) || 0)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                  <span className="divider">%-</span>
+                  <input
+                    type="number"
+                    className="criteria-input"
+                    value={changeMax}
+                    onChange={(e) => setChangeMax(Number(e.target.value) || 0)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                  <span className="unit">%</span>
+                </span>
               </div>
               <div className="criteria-item">
                 <span className="label">量比范围</span>
-                <span className="value">1.5 - 3</span>
+                <span className="value">
+                  <input
+                    type="number"
+                    step="0.1"
+                    className="criteria-input"
+                    value={volumeRatioMin}
+                    onChange={(e) => setVolumeRatioMin(Number(e.target.value) || 0)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                  <span className="divider">-</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    className="criteria-input"
+                    value={volumeRatioMax}
+                    onChange={(e) => setVolumeRatioMax(Number(e.target.value) || 0)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                </span>
               </div>
               <div className="criteria-item">
                 <span className="label">流通市值</span>
-                <span className="value">50 - 300亿</span>
+                <span className="value">
+                  <input
+                    type="number"
+                    className="criteria-input"
+                    value={marketCapMin}
+                    onChange={(e) => setMarketCapMin(Number(e.target.value) || 0)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                  <span className="divider">-</span>
+                  <input
+                    type="number"
+                    className="criteria-input"
+                    value={marketCapMax}
+                    onChange={(e) => setMarketCapMax(Number(e.target.value) || 0)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                  <span className="unit">亿</span>
+                </span>
               </div>
               <div className="criteria-item toggle-item">
                 <label className="toggle-label">
@@ -131,6 +263,17 @@ function App() {
                     disabled={state === 'screening' || state === 'filtering'}
                   />
                   <span className="toggle-text">包含科创板/创业板</span>
+                </label>
+              </div>
+              <div className="criteria-item toggle-item">
+                <label className="toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={preferTailInflow}
+                    onChange={(e) => setPreferTailInflow(e.target.checked)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                  <span className="toggle-text">尾盘30分钟主力净流入为正（默认）</span>
                 </label>
               </div>
             </div>
@@ -171,26 +314,72 @@ function App() {
               </div>
               <div className="criteria-item">
                 <span className="label">热门板块</span>
-                <span className="value">数字经济</span>
+                <span className="value">优先数字经济（加分项）</span>
+              </div>
+              <div className="criteria-item toggle-item">
+                <label className="toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={strictRiskControl}
+                    onChange={(e) => setStrictRiskControl(e.target.checked)}
+                    disabled={state === 'screening' || state === 'filtering'}
+                  />
+                  <span className="toggle-text">阶段涨幅 + 集中度限制（默认）</span>
+                </label>
               </div>
             </div>
-            <button 
-              className={`action-btn filter-btn ${state === 'filtering' ? 'loading' : ''}`}
-              onClick={handleFilter}
-              disabled={screenedStocks.length === 0 || state === 'filtering' || state === 'screening'}
-            >
-              {state === 'filtering' ? (
-                <>
-                  <span className="spinner"></span>
-                  分析中...
-                </>
-              ) : (
-                <>
-                  <span className="btn-icon">✨</span>
-                  精选过滤
-                </>
+            
+            {/* 过滤按钮和取消按钮 */}
+            <div className="action-buttons">
+              <button 
+                className={`action-btn filter-btn ${state === 'filtering' ? 'loading' : ''}`}
+                onClick={handleFilter}
+                disabled={screenedStocks.length === 0 || state === 'filtering' || state === 'screening'}
+              >
+                {state === 'filtering' ? (
+                  <>
+                    <span className="spinner"></span>
+                    分析中...
+                  </>
+                ) : (
+                  <>
+                    <span className="btn-icon">✨</span>
+                    精选过滤
+                  </>
+                )}
+              </button>
+              
+              {/* 取消按钮 */}
+              {state === 'filtering' && (
+                <button 
+                  className="action-btn cancel-btn"
+                  onClick={handleCancelFilter}
+                >
+                  <span className="btn-icon">⏹</span>
+                  取消分析
+                </button>
               )}
-            </button>
+              
+              {/* 最终精选按钮 */}
+              {finalPick && state === 'filtered' && (
+                <button
+                  className="action-btn final-pick-btn"
+                  onClick={() => setShowFinalPick(true)}
+                >
+                  <span className="btn-icon">🏆</span>
+                  最终精选一只标的
+                </button>
+              )}
+            </div>
+            
+            {/* 进度提示 */}
+            {filterProgress && (
+              <div className="progress-tip">
+                <span className="progress-icon">⏳</span>
+                <span>{filterProgress}</span>
+                <span className="progress-note">（预计需要 1-3 分钟，请耐心等待）</span>
+              </div>
+            )}
           </div>
         </section>
 
@@ -200,7 +389,62 @@ function App() {
             <span className="error-icon">⚠️</span>
             <span>{error}</span>
             <button onClick={() => setError(null)} className="close-btn">×</button>
-      </div>
+          </div>
+        )}
+
+        {/* 最终Top3精选候选 */}
+        {showFinalPick && finalPicks.length > 0 && (
+          <section className="results-section featured">
+            <div className="section-header">
+              <h2>
+                <span className="section-icon">🎯</span>
+                最终精选候选（T+1 短线）
+                <span className="count-badge">Top {finalPicks.length}</span>
+                {finalPicks.some(p => p.is_hot_industry) && (
+                  <span className="hot-industry-note" title="包含主力资金抢筹热门行业股票">
+                    🔥 含热门行业
+                  </span>
+                )}
+              </h2>
+              <button
+                className="reset-btn"
+                onClick={() => setShowFinalPick(false)}
+              >
+                收起
+              </button>
+            </div>
+
+            {/* 候选切换按钮 */}
+            {finalPicks.length > 1 && (
+              <div className="pick-tabs">
+                {finalPicks.map((pick, index) => (
+                  <button
+                    key={pick.code}
+                    className={`pick-tab ${selectedPickIndex === index ? 'active' : ''} ${pick.is_hot_industry ? 'hot-tab' : ''}`}
+                    onClick={() => setSelectedPickIndex(index)}
+                  >
+                    <span className="tab-rank">#{pick.rank || index + 1}</span>
+                    <span className="tab-name">{pick.name}</span>
+                    <span className="tab-score">评分 {pick.score}</span>
+                    {pick.source_label && (
+                      <span className={`tab-source ${pick.source === 'ai' ? 'tab-source-ai' : 'tab-source-technical'}`}>
+                        {pick.source === 'ai' ? '🤖' : '📊'}
+                      </span>
+                    )}
+                    {pick.is_hot_industry && (
+                      <span className="tab-hot" title="主力资金抢筹热门行业">
+                        🔥
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="featured-grid">
+              <FinalPickCard pick={finalPicks[selectedPickIndex]} />
+            </div>
+          </section>
         )}
 
         {/* 筛选结果 */}
@@ -212,20 +456,30 @@ function App() {
                 初步筛选结果
                 <span className="count-badge">{screenedStocks.length}只</span>
               </h2>
-              {state !== 'idle' && (
-                <button className="reset-btn" onClick={handleReset}>
-                  重新开始
-        </button>
-              )}
+              <div className="header-actions">
+                <button 
+                  className="collapse-btn" 
+                  onClick={() => setIsScreenedCollapsed(!isScreenedCollapsed)}
+                  title={isScreenedCollapsed ? '展开列表' : '折叠列表'}
+                >
+                  {isScreenedCollapsed ? '📂 展开' : '📁 折叠'}
+                </button>
+                {state !== 'idle' && (
+                  <button className="reset-btn" onClick={handleReset}>
+                    重新开始
+                  </button>
+                )}
+              </div>
             </div>
             
-            <div className="stock-table">
+            <div className={`stock-table ${isScreenedCollapsed ? 'collapsed' : ''}`}>
               <div className="table-header">
                 <span className="col-index">#</span>
                 <span className="col-name">股票名称</span>
                 <span className="col-price">最新价</span>
                 <span className="col-change">涨跌幅</span>
                 <span className="col-ratio">量比</span>
+                <span className="col-inflow">主力净流入(亿)</span>
                 <span className="col-cap">流通市值</span>
                 <span className="col-turnover">换手率</span>
                 <span className="col-amount">成交额</span>
@@ -246,6 +500,7 @@ function App() {
                     <span className="col-price">{stock.price.toFixed(2)}</span>
                     <span className="col-change up">+{stock.change_percent.toFixed(2)}%</span>
                     <span className="col-ratio">{stock.volume_ratio.toFixed(2)}</span>
+                    <span className="col-inflow">{(stock.main_inflow ?? 0).toFixed(2)}</span>
                     <span className="col-cap">{stock.market_cap.toFixed(1)}亿</span>
                     <span className="col-turnover">{stock.turnover.toFixed(2)}%</span>
                     <span className="col-amount">{formatAmount(stock.amount)}</span>
@@ -275,6 +530,24 @@ function App() {
                     <div className="stock-info">
                       <span className="stock-name">{stock.name}</span>
                       <span className="stock-code">{stock.code}</span>
+                      {/* 新增：来源标签 */}
+                      {stock.source_label && (
+                        <span 
+                          className={`source-tag ${stock.source === 'ai' ? 'source-ai' : 'source-technical'}`}
+                          title={stock.source === 'ai' ? '基于12维度AI综合评分' : '基于技术指标筛选补充'}
+                        >
+                          {stock.source_label}
+                        </span>
+                      )}
+                      {/* 新增：热门行业标识 */}
+                      {stock.is_hot_industry && (
+                        <span 
+                          className="hot-industry-tag"
+                          title={`所属行业(${stock.concepts?.join('/')})近30分钟主力资金大幅抢筹`}
+                        >
+                          🔥
+                        </span>
+                      )}
                       {stock.board_type && (
                         <span 
                           className="board-tag"
@@ -290,6 +563,19 @@ function App() {
                       <span className="change up">+{stock.change_percent.toFixed(2)}%</span>
                     </div>
                   </div>
+                  {/* 新增：行业概念信息 */}
+                  {stock.concepts && stock.concepts.length > 0 && (
+                    <div className="card-concepts">
+                      <span className="concepts-label">所属行业：</span>
+                      <div className="concepts-tags">
+                        {stock.concepts.map((concept, idx) => (
+                          <span key={idx} className="concept-tag">
+                            {concept}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {/* 数据时间信息 */}
                   {stock.minute_volume && (
                     <div className="data-time-info">
@@ -565,6 +851,12 @@ function App() {
                       </span>
                     </div>
                     <div className="indicator">
+                      <span className="ind-label">流通市值</span>
+                      <span className="ind-value">
+                        {stock.market_cap.toFixed(1)}亿
+                      </span>
+                    </div>
+                    <div className="indicator">
                       <span className="ind-label">明日预判</span>
                       <span className={`ind-value ${
                         stock.indicators.open_probability === 'high' ? 'good' : 
@@ -575,6 +867,9 @@ function App() {
                       </span>
                     </div>
                   </div>
+
+                  {/* AI评分雷达图：一眼看出强项 */}
+                  <AIRadar stock={stock} />
                   
                   {/* 选股理由 */}
                   {stock.reasons.length > 0 && (
