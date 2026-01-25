@@ -1522,7 +1522,17 @@ def ai_select_stocks(
             warnings.append(f"换手率{turnover}%偏高")
         elif turnover < 3:
             score -= 5
-            warnings.append(f"换手率{turnover}%过低，流动性不足")
+            warnings.append(f"换手率{turnover}%偏低，流动性一般")
+        elif turnover < 1.5:
+             # 虽然初筛可能已经过滤了极低换手，但在AI精选中再次确认警告
+            score -= 15
+            warnings.append(f"⚠️ 换手率{turnover}%极低，流动性枯竭风险")
+        
+        # 成交额检测（新增）
+        amount_wan = stock.get('amount', 0)
+        if amount_wan < 5000:  # < 5000万
+            score -= 10
+            warnings.append(f"⚠️ 成交额仅{amount_wan/100:.2f}亿，流动性较差")
         
         # 量比评分
         if 1.5 <= volume_ratio <= 3:
@@ -1878,10 +1888,12 @@ async def screen_stocks(
     limit: int = Query(30, description="返回数量"),
     include_kcb_cyb: bool = Query(False, description="是否包含科创板/创业板"),
     prefer_tail_inflow: bool = Query(True, description="是否优先尾盘30分钟主力净流入（初筛过滤）"),
+    amount_min: float = Query(3000, description="成交额下限(万)"),
+    turnover_min: float = Query(1.2, description="换手率下限(%)"),
 ):
     """筛选股票"""
     try:
-        print(f"开始筛选股票: 涨幅{change_min}%-{change_max}%, 量比{volume_ratio_min}-{volume_ratio_max}, 市值{market_cap_min}-{market_cap_max}亿, 包含科创板/创业板: {include_kcb_cyb}, 优先尾盘净流入: {prefer_tail_inflow}")
+        print(f"开始筛选股票: 涨幅{change_min}%-{change_max}%, 量比{volume_ratio_min}-{volume_ratio_max}, 市值{market_cap_min}-{market_cap_max}亿, 成交额>={amount_min}万, 换手>={turnover_min}%, 包含科创板/创业板: {include_kcb_cyb}, 优先尾盘净流入: {prefer_tail_inflow}")
         
         # 获取所有股票数据
         all_stocks = get_all_stocks_data()
@@ -1911,6 +1923,14 @@ async def screen_stocks(
             
             # 流通市值筛选（亿）
             if not (market_cap_min <= stock['market_cap'] <= market_cap_max):
+                continue
+            
+            # 成交额筛选（万）
+            if stock.get('amount', 0) < amount_min:
+                continue
+
+            # 换手率筛选（%）
+            if stock.get('turnover', 0) < turnover_min:
                 continue
             
             filtered.append(stock)
@@ -1962,7 +1982,8 @@ async def screen_stocks(
             "criteria": {
                 "change_range": f"{change_min}%-{change_max}%",
                 "volume_ratio_range": f"{volume_ratio_min}-{volume_ratio_max}",
-                "market_cap_range": f"{market_cap_min}-{market_cap_max}亿"
+                "market_cap_range": f"{market_cap_min}-{market_cap_max}亿",
+                "min_liquidity": f"成交额>={amount_min}万, 换手>={turnover_min}%"
             },
             "data": result
         }
