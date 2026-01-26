@@ -28,16 +28,16 @@ function App() {
   const [strictRiskControl, setStrictRiskControl] = useState<boolean>(true); // 是否启用阶段涨幅+集中度限制（默认勾选）
   const [filterProgress, setFilterProgress] = useState<string>(''); // 新增：过滤进度提示
   const [isScreenedCollapsed, setIsScreenedCollapsed] = useState<boolean>(false); // 新增：初步筛选结果是否折叠
-  
+
   // 取消请求的控制器
   const cancelTokenSource = useRef<any>(null);
-  
+
   // 可调筛选参数（默认值与后端一致）
-  const [changeMin, setChangeMin] = useState<number>(3);
+  const [changeMin, setChangeMin] = useState<number>(2);
   const [changeMax, setChangeMax] = useState<number>(6);
   const [volumeRatioMin, setVolumeRatioMin] = useState<number>(1.5);
   const [volumeRatioMax, setVolumeRatioMax] = useState<number>(3);
-  const [marketCapMin, setMarketCapMin] = useState<number>(50);
+  const [marketCapMin, setMarketCapMin] = useState<number>(80);
   const [marketCapMax, setMarketCapMax] = useState<number>(350);
 
   // 筛选股票
@@ -46,7 +46,7 @@ function App() {
     setError(null);
     setFilteredStocks([]);
     setAnalysisResults([]);
-    
+
     try {
       const result = await screenStocks({
         change_min: changeMin,
@@ -70,14 +70,14 @@ function App() {
   // 过滤精选股票
   const handleFilter = async () => {
     if (screenedStocks.length === 0) return;
-    
+
     setState('filtering');
     setError(null);
     setFilterProgress('正在初始化分析...');
-    
+
     // 创建取消令牌
     cancelTokenSource.current = createCancelToken();
-    
+
     // 模拟进度更新
     const progressTimer = setInterval(() => {
       setFilterProgress(prev => {
@@ -95,20 +95,20 @@ function App() {
         return currentIndex < tips.length - 1 ? tips[currentIndex + 1] : tips[tips.length - 1];
       });
     }, 8000); // 每8秒更新一次提示
-    
+
     try {
       const codes = screenedStocks.map(s => s.code);
       const result = await filterStocks(
-        codes, 
-        includeKcbCyb, 
-        preferTailInflow, 
+        codes,
+        includeKcbCyb,
+        preferTailInflow,
         strictRiskControl,
         cancelTokenSource.current.token
       );
-      
+
       clearInterval(progressTimer);
       setFilterProgress('');
-      
+
       setFilteredStocks(result.data);
       setAnalysisResults(result.all_analysis);
       setAiSelectedStocks(result.ai_selected || []);
@@ -122,7 +122,7 @@ function App() {
     } catch (err: any) {
       clearInterval(progressTimer);
       setFilterProgress('');
-      
+
       if (err.message === 'Cancel') {
         setError('分析已取消');
       } else {
@@ -256,8 +256,8 @@ function App() {
               </div>
               <div className="criteria-item toggle-item">
                 <label className="toggle-label">
-                  <input 
-                    type="checkbox" 
+                  <input
+                    type="checkbox"
                     checked={includeKcbCyb}
                     onChange={(e) => setIncludeKcbCyb(e.target.checked)}
                     disabled={state === 'screening' || state === 'filtering'}
@@ -277,7 +277,7 @@ function App() {
                 </label>
               </div>
             </div>
-            <button 
+            <button
               className={`action-btn screen-btn ${state === 'screening' ? 'loading' : ''}`}
               onClick={handleScreen}
               disabled={state === 'screening' || state === 'filtering'}
@@ -328,10 +328,10 @@ function App() {
                 </label>
               </div>
             </div>
-            
+
             {/* 过滤按钮和取消按钮 */}
             <div className="action-buttons">
-              <button 
+              <button
                 className={`action-btn filter-btn ${state === 'filtering' ? 'loading' : ''}`}
                 onClick={handleFilter}
                 disabled={screenedStocks.length === 0 || state === 'filtering' || state === 'screening'}
@@ -348,10 +348,10 @@ function App() {
                   </>
                 )}
               </button>
-              
+
               {/* 取消按钮 */}
               {state === 'filtering' && (
-                <button 
+                <button
                   className="action-btn cancel-btn"
                   onClick={handleCancelFilter}
                 >
@@ -359,7 +359,7 @@ function App() {
                   取消分析
                 </button>
               )}
-              
+
               {/* 最终精选按钮 */}
               {finalPick && state === 'filtered' && (
                 <button
@@ -371,7 +371,7 @@ function App() {
                 </button>
               )}
             </div>
-            
+
             {/* 进度提示 */}
             {filterProgress && (
               <div className="progress-tip">
@@ -457,8 +457,8 @@ function App() {
                 <span className="count-badge">{screenedStocks.length}只</span>
               </h2>
               <div className="header-actions">
-                <button 
-                  className="collapse-btn" 
+                <button
+                  className="collapse-btn"
                   onClick={() => setIsScreenedCollapsed(!isScreenedCollapsed)}
                   title={isScreenedCollapsed ? '展开列表' : '折叠列表'}
                 >
@@ -471,7 +471,7 @@ function App() {
                 )}
               </div>
             </div>
-            
+
             <div className={`stock-table ${isScreenedCollapsed ? 'collapsed' : ''}`}>
               <div className="table-header">
                 <span className="col-index">#</span>
@@ -486,11 +486,10 @@ function App() {
               </div>
               <div className="table-body">
                 {screenedStocks.map((stock, index) => (
-                  <div 
-                    key={stock.code} 
-                    className={`table-row ${
-                      analysisResults.find(a => a.code === stock.code)?.qualified ? 'qualified' : ''
-                    }`}
+                  <div
+                    key={stock.code}
+                    className={`table-row ${analysisResults.find(a => a.code === stock.code)?.qualified ? 'qualified' : ''
+                      }`}
                   >
                     <span className="col-index">{index + 1}</span>
                     <span className="col-name">
@@ -521,7 +520,7 @@ function App() {
                 <span className="count-badge gold">{filteredStocks.length}只</span>
               </h2>
             </div>
-            
+
             <div className="featured-grid">
               {filteredStocks.map((stock, index) => (
                 <div key={stock.code} className="featured-card">
@@ -532,7 +531,7 @@ function App() {
                       <span className="stock-code">{stock.code}</span>
                       {/* 新增：来源标签 */}
                       {stock.source_label && (
-                        <span 
+                        <span
                           className={`source-tag ${stock.source === 'ai' ? 'source-ai' : 'source-technical'}`}
                           title={stock.source === 'ai' ? '基于12维度AI综合评分' : '基于技术指标筛选补充'}
                         >
@@ -541,7 +540,7 @@ function App() {
                       )}
                       {/* 新增：热门行业标识 */}
                       {stock.is_hot_industry && (
-                        <span 
+                        <span
                           className="hot-industry-tag"
                           title={`所属行业(${stock.concepts?.join('/')})近30分钟主力资金大幅抢筹`}
                         >
@@ -549,7 +548,7 @@ function App() {
                         </span>
                       )}
                       {stock.board_type && (
-                        <span 
+                        <span
                           className="board-tag"
                           style={{ backgroundColor: stock.board_type.color }}
                           title={stock.board_type.risk_note}
@@ -588,7 +587,7 @@ function App() {
                       <span className="fetch-time">获取于 {stock.minute_volume.fetch_time}</span>
                     </div>
                   )}
-                  
+
                   <div className="card-metrics">
                     <div className="metric">
                       <span className="metric-label">量比</span>
@@ -607,7 +606,7 @@ function App() {
                       <span className="metric-value">{stock.support_level.toFixed(2)}</span>
                     </div>
                   </div>
-                  
+
                   <div className="card-analysis">
                     <div className="analysis-item">
                       <span className={stock.analysis.volume_pattern.includes('✓') ? 'pass' : 'fail'}>
@@ -625,7 +624,7 @@ function App() {
                       </span>
                     </div>
                   </div>
-                  
+
                   {/* 30分钟成交量趋势图 */}
                   {stock.minute_volume && stock.minute_volume.data && stock.minute_volume.data.length > 0 && (
                     <div className="volume-chart">
@@ -667,23 +666,23 @@ function App() {
                           const maxPrice = Math.max(...prices);
                           const priceRange = maxPrice - minPrice || 1;
                           const maxVolume = Math.max(...data.map(m => m.volume));
-                          
+
                           // 生成价格折线的SVG路径
                           const points = data.map((m, idx) => {
                             const x = (idx / (data.length - 1)) * 100;
                             const y = 100 - ((m.price - minPrice) / priceRange) * 100;
                             return `${x},${y}`;
                           }).join(' ');
-                          
+
                           return (
                             <>
                               {/* 成交量柱状图 */}
                               <div className="chart-container">
                                 {data.map((m, idx) => (
-                                  <div 
-                                    key={idx} 
+                                  <div
+                                    key={idx}
                                     className="volume-bar"
-                                    style={{ 
+                                    style={{
                                       height: `${maxVolume > 0 ? (m.volume / maxVolume) * 100 : 0}%`,
                                       opacity: 0.3 + (idx / data.length) * 0.5
                                     }}
@@ -715,7 +714,7 @@ function App() {
                       </div>
                     </div>
                   )}
-                  
+
                   {/* 利空消息提示 */}
                   {stock.negative_news && (
                     <div className={`news-alert ${stock.negative_news.risk_level}`}>
@@ -724,13 +723,13 @@ function App() {
                           {stock.negative_news.has_negative_news ? '⚠️' : '✅'}
                         </span>
                         <span className="news-title">
-                          {stock.negative_news.has_negative_news 
-                            ? `发现 ${stock.negative_news.negative_count} 条利空消息` 
+                          {stock.negative_news.has_negative_news
+                            ? `发现 ${stock.negative_news.negative_count} 条利空消息`
                             : '近3日无利空消息'}
                         </span>
                         <span className={`risk-badge ${stock.negative_news.risk_level}`}>
-                          {stock.negative_news.risk_level === 'high' ? '高风险' : 
-                           stock.negative_news.risk_level === 'medium' ? '需关注' : '低风险'}
+                          {stock.negative_news.risk_level === 'high' ? '高风险' :
+                            stock.negative_news.risk_level === 'medium' ? '需关注' : '低风险'}
                         </span>
                       </div>
                       {stock.negative_news.negative_news.length > 0 && (
@@ -765,13 +764,13 @@ function App() {
                   <span className="market-icon">{marketEnv.safe_to_buy ? '🟢' : '🟡'}</span>
                   <span>上证 {marketEnv.index_change >= 0 ? '+' : ''}{marketEnv.index_change.toFixed(2)}%</span>
                   <span className="market-tag">
-                    {marketEnv.market_sentiment === 'bullish' ? '多头市场' : 
-                     marketEnv.market_sentiment === 'bearish' ? '空头市场' : '震荡市场'}
+                    {marketEnv.market_sentiment === 'bullish' ? '多头市场' :
+                      marketEnv.market_sentiment === 'bearish' ? '空头市场' : '震荡市场'}
                   </span>
                 </div>
               )}
             </div>
-            
+
             <div className="ai-grid">
               {aiSelectedStocks.map((stock, index) => (
                 <div key={stock.code} className="ai-card">
@@ -784,7 +783,7 @@ function App() {
                       <span className="ai-stock-name">{stock.name}</span>
                       <span className="ai-stock-code">{stock.code}</span>
                       {stock.board_type && (
-                        <span 
+                        <span
                           className="board-tag"
                           style={{ backgroundColor: stock.board_type.color }}
                           title={stock.board_type.risk_note}
@@ -800,7 +799,7 @@ function App() {
                       </span>
                     </div>
                   </div>
-                  
+
                   {/* 数据时间信息 */}
                   {stock.minute_volume && (
                     <div className="data-time-info">
@@ -812,35 +811,33 @@ function App() {
                       )}
                     </div>
                   )}
-                  
+
                   <div className="ai-price-row">
                     <span className="ai-price">{stock.price.toFixed(2)}</span>
                     <span className={`ai-change ${stock.change_percent >= 0 ? 'up' : 'down'}`}>
                       {stock.change_percent >= 0 ? '+' : ''}{stock.change_percent.toFixed(2)}%
                     </span>
                   </div>
-                  
+
                   {/* T+1短线核心指标 */}
                   <div className="ai-indicators">
                     <div className="indicator wide">
                       <span className="ind-label">尾盘走势</span>
-                      <span className={`ind-value ${
-                        stock.indicators.tail_trend.trend === 'strong_up' ? 'good' : 
-                        stock.indicators.tail_trend.trend === 'up' ? 'good' : 
-                        stock.indicators.tail_trend.trend === 'down' ? 'warn' : ''
-                      }`}>
+                      <span className={`ind-value ${stock.indicators.tail_trend.trend === 'strong_up' ? 'good' :
+                        stock.indicators.tail_trend.trend === 'up' ? 'good' :
+                          stock.indicators.tail_trend.trend === 'down' ? 'warn' : ''
+                        }`}>
                         {stock.indicators.tail_trend.trend === 'strong_up' ? '🚀 强势拉升' :
-                         stock.indicators.tail_trend.trend === 'up' ? '📈 温和上涨' :
-                         stock.indicators.tail_trend.trend === 'down' ? '📉 回落' :
-                         stock.indicators.tail_trend.trend === 'stable' ? '➡️ 平稳' : '—'}
+                          stock.indicators.tail_trend.trend === 'up' ? '📈 温和上涨' :
+                            stock.indicators.tail_trend.trend === 'down' ? '📉 回落' :
+                              stock.indicators.tail_trend.trend === 'stable' ? '➡️ 平稳' : '—'}
                       </span>
                     </div>
                     <div className="indicator wide">
                       <span className="ind-label">距涨停空间</span>
-                      <span className={`ind-value ${
-                        stock.indicators.upside_space.space >= 5 ? 'good' : 
+                      <span className={`ind-value ${stock.indicators.upside_space.space >= 5 ? 'good' :
                         stock.indicators.upside_space.near_limit ? 'warn' : ''
-                      }`}>
+                        }`}>
                         {stock.indicators.upside_space.space.toFixed(1)}%
                       </span>
                     </div>
@@ -858,19 +855,18 @@ function App() {
                     </div>
                     <div className="indicator">
                       <span className="ind-label">明日预判</span>
-                      <span className={`ind-value ${
-                        stock.indicators.open_probability === 'high' ? 'good' : 
+                      <span className={`ind-value ${stock.indicators.open_probability === 'high' ? 'good' :
                         stock.indicators.open_probability === 'low' ? 'warn' : ''
-                      }`}>
+                        }`}>
                         {stock.indicators.open_probability === 'high' ? '🟢 高开' :
-                         stock.indicators.open_probability === 'medium' ? '🟡 平开' : '🔴 低开'}
+                          stock.indicators.open_probability === 'medium' ? '🟡 平开' : '🔴 低开'}
                       </span>
                     </div>
                   </div>
 
                   {/* AI评分雷达图：一眼看出强项 */}
                   <AIRadar stock={stock} />
-                  
+
                   {/* 选股理由 */}
                   {stock.reasons.length > 0 && (
                     <div className="ai-reasons">
@@ -882,7 +878,7 @@ function App() {
                       </ul>
                     </div>
                   )}
-                  
+
                   {/* 风险提示 */}
                   {stock.warnings.length > 0 && (
                     <div className="ai-warnings">
@@ -894,17 +890,17 @@ function App() {
                       </ul>
                     </div>
                   )}
-                  
+
                   {/* 利空消息 */}
                   {stock.negative_news && (
                     <div className={`ai-news-alert ${stock.negative_news.risk_level}`}>
                       <span className="news-icon">{stock.negative_news.has_negative_news ? '⚠️' : '✅'}</span>
-                      <span>{stock.negative_news.has_negative_news 
-                        ? `${stock.negative_news.negative_count}条利空` 
+                      <span>{stock.negative_news.has_negative_news
+                        ? `${stock.negative_news.negative_count}条利空`
                         : '无利空消息'}</span>
                     </div>
                   )}
-                  
+
                   {/* 30分钟成交量趋势图 */}
                   {stock.minute_volume && stock.minute_volume.data && stock.minute_volume.data.length > 0 && (
                     <div className="volume-chart ai-chart">
@@ -946,21 +942,21 @@ function App() {
                           const maxPrice = Math.max(...prices);
                           const priceRange = maxPrice - minPrice || 1;
                           const maxVolume = Math.max(...data.map(m => m.volume));
-                          
+
                           const points = data.map((m, idx) => {
                             const x = (idx / (data.length - 1)) * 100;
                             const y = 100 - ((m.price - minPrice) / priceRange) * 100;
                             return `${x},${y}`;
                           }).join(' ');
-                          
+
                           return (
                             <>
                               <div className="chart-container">
                                 {data.map((m, idx) => (
-                                  <div 
-                                    key={idx} 
+                                  <div
+                                    key={idx}
                                     className="volume-bar"
-                                    style={{ 
+                                    style={{
                                       height: `${(m.volume / maxVolume) * 100}%`,
                                       width: `${100 / data.length - 0.5}%`,
                                       opacity: 0.3 + (idx / data.length) * 0.5
@@ -981,7 +977,7 @@ function App() {
                               <div className="chart-legend">
                                 <span className="legend-volume">■ 成交量</span>
                                 <span className="legend-price">— 价格</span>
-      </div>
+                              </div>
                             </>
                           );
                         })()}
@@ -1003,7 +999,7 @@ function App() {
                 分析详情
               </h2>
             </div>
-            
+
             <div className="analysis-table">
               <div className="table-header">
                 <span className="col-name">股票</span>
